@@ -30,7 +30,8 @@ import siteprofile as site_profile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'dashboard'
-SHIP = ['app.py', 'panel', 'static', 'tests', 'deploy/requirements.lock']
+# The deploy examples are read by test_engine_modes on the server.
+SHIP = ['app.py', 'panel', 'static', 'tests', 'deploy/requirements.lock', 'deploy/settings.xray.example.json', 'deploy/vps-dashboard-xray.service']
 SKIP_PARTS = {'__pycache__', 'node_modules'}
 MARK_BEGIN, MARK_END = '# JOYSOL MONITOR BEGIN', '# JOYSOL MONITOR END'
 GATE_LINES = ('auth_request /_joysol_ws_gate;\n        auth_request_set $joysol_verified_client $upstream_http_x_verified_client_ip;\n'
