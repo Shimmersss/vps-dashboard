@@ -109,7 +109,7 @@ const data = computed(() => state.xray)
 const span = ref('24h'), detail = ref(null), network = ref(null), system = ref(null), mapReady = ref(false), saving = ref(false)
 const draftLabels = reactive({}), settings = reactive({})
 const ranges = [{ value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }]
-const media = ['Instagram', 'YouTube', 'Facebook']
+const media = computed(() => data.value?.probe_targets || ['Instagram', 'YouTube', 'Facebook'])
 const headings = { overview: 'Xray 概览', xray: 'Xray 节点列表', live: 'Xray 实时速率', topology: 'Xray 链路拓扑', map: 'Xray 出口分布', network: 'Xray 网络状态', clients: 'Xray 在线来源', history: 'Xray 流量记录', daily: 'Xray 每日流量', exits: 'Xray 出口节点', bans: 'Xray 访问控制', system: 'Xray 系统与设置' }
 const descriptions = { overview: '首页统计来自 Xray 原生入站计数，不混入其他内核流量。', live: '节点字节、速率与采样时间均来自 Xray。', xray: '读取现有节点配置与原生计数，保留主入口和对照入口的独立统计。', topology: '按结构化入站路由生成链路，复杂路由不假定单一出口。', clients: '只显示核心提供的在线来源地址，未提供的数据保持未知。', history: '真实持久采样记录，不伪装为逐连接访问历史。', daily: '按站点时区查看 Xray 日累计。', exits: '实测回显与主流媒体 HTTPS 检查；不代表播放、账号登录或地区解锁。', map: '地理位置来自本地离线数据库。', network: 'Xray 载荷与整机网卡指标分别标明来源。', system: '查看 Xray 核心版本、服务状态和面板设置。', bans: '仅展示当前 Xray 接入能力。' }
 const selected = computed(() => state.xrayInstance)

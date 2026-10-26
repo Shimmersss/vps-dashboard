@@ -5,7 +5,7 @@
         <span class="brand-mark"><svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true"><path d="M6 22 L13 10 L19 18 L26 7" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
         <span>{{ title }}<small>v{{ state.overview?.version || '2' }}</small></span>
       </div>
-      <div class="engine-picker">
+      <div v-if="state.overview?.xray?.enabled && state.overview?.singbox_enabled !== false" class="engine-picker">
         <label class="small muted" for="engine">监控来源</label>
         <select id="engine" v-model="state.engine" class="input" aria-label="监控来源">
           <option value="xray" :disabled="state.overview && !state.overview.xray?.enabled">Xray{{ state.overview?.xray?.enabled ? '（主要）' : '（未配置）' }}</option><option value="singbox" :disabled="state.overview?.singbox_enabled === false">sing-box{{ state.overview?.singbox_enabled === false ? '（未启用）' : state.overview?.xray?.enabled ? '（次要）' : '' }}</option>

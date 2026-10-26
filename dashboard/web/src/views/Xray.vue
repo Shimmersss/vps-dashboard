@@ -40,7 +40,7 @@ import Status from '../components/Status.vue'
 import DataTable from '../components/DataTable.vue'
 
 const data = ref(null), loading = ref(true), instance = ref('')
-const mediaNames = ['Instagram', 'YouTube', 'Facebook']
+const mediaNames = computed(() => data.value?.probe_targets || ['Instagram', 'YouTube', 'Facebook'])
 const totals = computed(() => data.value?.totals || {})
 const allConnected = computed(() => data.value?.instances?.every(i => i.connected))
 const rows = computed(() => (data.value?.nodes || []).filter(n => !instance.value || n.instance === instance.value))

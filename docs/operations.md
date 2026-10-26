@@ -29,8 +29,8 @@
 
 1. 先只读核验实际服务和配置，再确定变更范围。
 2. 备份相关配置。
-3. `sing-box check` / `nginx -t` 通过后才重启或 reload。
-4. 重启前说明影响：重启 sing-box 会中断现有代理连接几秒；重启面板会让 CDN 入口的新连接短暂失败。
+3. `sing-box check` / `xray run -test` / `nginx -t` 通过后才重启或 reload。
+4. 重启前说明影响：重启 sing-box 或 Xray 会中断其现有代理连接几秒；重启面板会让 CDN 入口的新连接短暂失败。
 5. 用出口地址、全链路请求和服务状态验证结果，保留回滚步骤。
 
 ## 脚本一览
@@ -43,7 +43,8 @@
 | `deploy-oxylabs-esa.py` | 增加经 CDN 的变体入站，AI 流量走指定上游代理 |
 | `configure-ai-exit.py` | 服务端把 AI 服务域名分流到上游家宽代理 |
 | `enable-bbr.sh`、`tune-tcp-buffers.sh` | BBR 与 TCP 缓冲调优，自动备份原值，支持回退 |
-| `deploy-dashboard.py` | 部署面板（预检、测试、迁移演练、备份、自动回滚） |
+| `deploy-dashboard.py` | 部署面板（sing-box / Xray / 共存三种模式；预检、测试、迁移演练、备份、自动回滚） |
+| `enable-xray-stats.py`、`xray_stats_remote.py` | 给已有 Xray 打开回环只读 StatsService（叠加 `-config` + systemd drop-in，保留原 policy；`--check-only` 只做 `xray run -test`） |
 | `sync-dashboard-login.py` | 同步面板主账户密码并撤销所有会话 |
 | `export-client.py`、`export-esa-client.py`、`export-hy2-client.py` | 导出 Clash/Mihomo、sing-box 和 URI 客户端配置到私有 `exports/` |
 | `publish-subscriptions.py` | 把导出的配置发布为带随机令牌的 HTTPS 订阅 |

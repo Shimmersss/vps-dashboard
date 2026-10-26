@@ -1,6 +1,6 @@
-# sing-box 连接管理版
+# 面板
 
-本文描述 sing-box 版本。Xray 独立配置、节点统计与功能边界见 [Xray 接入](xray.md)，双核心共存见 [共存部署](existing-host.md)。
+本文以 sing-box 为主。Xray 的接入、统计口径和能力边界见 [Xray 接入](xray.md)；只装一种核心或两者共存，见 [部署模式](deployment.md)。两种核心共用登录、会话、告警、审计和系统页，侧栏“监控来源”只在两者都启用时出现。
 
 面板挂在 Nginx 下的子路径（默认 `/monitor/`），域名和路径由 `dashboard/deploy/site.json` 决定。登录凭据和部署密钥只放在本地私有目录（`exports/`，不入库），服务器端只存 PBKDF2 哈希。支持多账户，会话可在面板中查看和撤销。
 
@@ -31,7 +31,7 @@
 
 ## 出口探测
 
-每 5 分钟（可调）经每个 direct / socks / http 出站请求 Cloudflare trace，记录出口地址、机房与耗时；同时检查 Instagram、YouTube 和 Facebook 的 HTTPS 可达性。媒体结果不代表视频播放、解锁或带宽测速。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
+每 5 分钟（可调）经每个 direct / socks / http 出站请求 `probes.targets` 中的目标，记录出口地址、机房与耗时。trace 类目标（`/cdn-cgi/trace`）回显出口 IP；`"kind": "http"` 的目标只检查 HTTPS 可达性，2xx/3xx 算成功。默认目标：Cloudflare trace，以及 Instagram、YouTube、Facebook；可以在 site.json 里换成自己关心的站点。可达不代表视频播放、登录或地区解锁。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
 
 ## 配置分层
 
@@ -55,9 +55,9 @@
 
 - 后端 `dashboard/panel/`（入口 `dashboard/app.py`）；前端 `dashboard/web/`（Vite + Vue 3 + ECharts），构建产物在 `dashboard/static/app/`，服务器不需要 Node。
 - 前端构建：`cd dashboard/web && npm run build`。
-- 测试：`cd dashboard/tests && python3.10 -m unittest test_panel`，离线运行，不依赖防火墙或 sing-box。
+- 测试：`cd dashboard/tests && python3.10 -m unittest test_panel test_media_probes test_xray test_xray_dashboard test_alert_sources test_engine_modes`，离线运行，不依赖防火墙或 sing-box；`test_xray` 的原生测试需要 `XRAY_TEST_BINARY` 指向真实 Xray。前端：`node --test tests/engines.test.mjs`。
 - 本地预览：`python dashboard/dev/devserver.py`（合成数据）。
-- 部署：`.venv/bin/python -B scripts/deploy-dashboard.py`，加 `--check-only` 只做只读预检。流程：
+- 部署：`.venv/bin/python -B scripts/deploy-dashboard.py`，加 `--check-only` 只做只读预检；模式（sing-box / Xray / 共存）由 site.json 决定，见 [部署模式](deployment.md)。流程：
   1. 只读预检；
   2. 上传新版本到 releases 目录；
   3. 远端跑测试；

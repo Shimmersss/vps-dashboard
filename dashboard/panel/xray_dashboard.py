@@ -46,7 +46,8 @@ def present(ctx):
         out['geo'] = {k: ctx.geo.lookup(out['exit_ip'])[k] for k in GEO_KEYS} if out['exit_ip'] else None
     data.update(engine='xray', sources=list(sources.values()), source_nodes_supported=supported,
                 outbounds=list(outbounds.values()), since=min((n['since'] for n in data['nodes']), default=None),
-                probe_interval=ctx.settings.get('probes.interval_seconds'), probes_enabled=bool(ctx.settings.get('probes.enabled')),
+                probe_interval=ctx.settings.get('probes.interval_seconds'),
+                probe_targets=[t['name'] for t in ctx.settings.get('probes.targets') or [] if t['name'] != 'trace'], probes_enabled=bool(ctx.settings.get('probes.enabled')),
                 capabilities={'node_bytes': True, 'node_rates': True, 'daily_bytes': True, 'connection_count': False,
                               'per_connection_bytes': False, 'client_bytes': False, 'destination_history': False,
                               'close_connection': False, 'access_control': False})

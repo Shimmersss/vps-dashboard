@@ -6,8 +6,9 @@ and the sample addresses tests may keep. Public-facing docs live in public-docs/
 repository root (public-docs/README.md becomes README.md). The copy is built in
 outputs/public-repo/ (git-ignored); any leftover private value, unknown public IP or UUID aborts before commit.
 Usage: scripts/publish-public.py [--push [--rewrite-history]] [-m message]
---rewrite-history replaces the public history with one fresh commit (force push); use it after something
-that should never have been public was published.
+A normal push commits on top of the current remote main (merged pull requests stay in history; their content is
+replaced by this copy). --rewrite-history replaces the public history with one fresh commit (force push); use it
+after something that should never have been public was published.
 """
 import argparse
 import fnmatch
@@ -127,6 +128,9 @@ def main():
         git('gc', '-q', '--prune=now')
         print('已用单个新提交替换公开历史 https://github.com/%s' % cfg['repo'])
         return
+    # Commit on top of the current public main, so merges made on GitHub (e.g. pull requests) stay in history.
+    git('fetch', '-q', 'origin', 'main')
+    git('reset', '-q', 'FETCH_HEAD')
     git('add', '-A')
     if not git('status', '--porcelain', capture=True).strip():
         print('无变化，未提交')

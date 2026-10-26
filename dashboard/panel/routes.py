@@ -454,7 +454,7 @@ def register(app, ctx):
         cert = system.certificate(ctx.cert_path())
         return jsonify(
             version=ctx.version, uptime=system.uptime(), started=int(ctx.health['started']),
-            services=system.services(list(s.get('alerts.services') or []) + [i['service'] for i in ctx.xray.instances] + ['joysol-dashboard.service']),
+            services=system.services(list(dict.fromkeys(list(s.get('alerts.services') or []) + [i['service'] for i in ctx.xray.instances] + ['joysol-dashboard.service']))),
             certificate=cert, disk=system.disk(str(s.data_dir)), database={'bytes': ctx.store.size(), 'migrations': ctx.store.migrations},
             singbox={'version': system.singbox_version(s.get('singbox.binary')), 'config': s.get('singbox.config_path'),
                      'api': s.get('singbox.api_address'), 'error': ctx.topology.error},
