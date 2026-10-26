@@ -12,3 +12,7 @@ verification/
 dashboard/web/node_modules/
 dashboard/deploy/geo/*.xdb
 .DS_Store
+
+dashboard/deploy/site.json
+
+docs/existing-host.local.md

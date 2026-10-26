@@ -1,5 +1,8 @@
 <template>
   <div class="grid">
+    <section v-if="state.overview?.xray?.enabled" class="card">
+      <div class="card-head"><div><h2>Xray 节点已接入 · {{ state.overview.xray.nodes.length }} 个</h2><p>Xray 今日 {{ bytes(state.overview.xray.totals.today_upload + state.overview.xray.totals.today_download) }} · 接入后累计 {{ bytes(state.overview.xray.totals.upload + state.overview.xray.totals.download) }}。下面的逐连接统计覆盖 sing-box；Xray 的节点流量、速率和媒体出口请打开专页。</p></div><NavLink class="btn sm" to="xray">Xray 监控</NavLink></div>
+    </section>
     <div class="grid cols-4">
       <Kpi label="实时速率" :value="rate(liveUp + liveDown)">
         <span class="legend-key"><i class="sw-1"></i>↓ {{ rate(liveDown) }}</span>

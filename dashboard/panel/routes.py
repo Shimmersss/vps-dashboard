@@ -14,6 +14,7 @@ from . import system
 from .bans import canonical
 from .store import RANGES
 from .topology import rule_label
+from . import xray_dashboard
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / 'static'
@@ -86,6 +87,8 @@ def register(app, ctx):
                 return error('请求验证失败', 403)
             if request.headers.get('Origin') != s.public_origin:
                 return error('来源验证失败', 403)
+        if not ctx.singbox_enabled and rel in ('/api/ban', '/api/connections/close', '/api/probes/run', '/api/stream'):
+            return error('sing-box 未启用；Xray 当前提供只读节点监控', 409)
         return None
 
     # -- CDN origin gate (Nginx auth_request) ----------------------------------------------
@@ -107,9 +110,13 @@ def register(app, ctx):
     @app.route('/internal/health')
     def internal_health():
         # Loopback only (see protect); used by the deploy script's post-switch check.
+        xray = ctx.xray.snapshot(detail=False)
+        primary = 'xray' if ctx.xray.instances else 'singbox'
+        ok = all(i['connected'] for i in xray['instances']) if primary == 'xray' else ctx.health['connected']
         return jsonify(version=ctx.version, health=_health(ctx), schema=ctx.store.meta('schema_version', '1'),
                        base=base, gate=s.gate_enabled, inbounds=len(ctx.topology.describe()['inbounds']),
-                       geo=sorted(ctx.geo.info()), migrations=ctx.store.migrations)
+                       geo=sorted(ctx.geo.info()), migrations=ctx.store.migrations, xray=xray,
+                       primary_engine=primary, ok=bool(ok))
 
     # -- pages -----------------------------------------------------------------------------
     def login_page(message='', status=200):
@@ -172,8 +179,33 @@ def register(app, ctx):
             live={k: frame[k] for k in ('up', 'down', 'active', 'online_ips')},
             topology={'inbounds': topo['inbounds'], 'outbounds': topo['outbounds'], 'final': topo['final']},
             alerts=len([a for a in ctx.alerts.open_alerts() if not a['acked']]),
-            features={'probes': bool(s.get('probes.enabled')), 'stream': True},
+            alerts_xray=len([a for a in xray_dashboard.alerts_for_xray(ctx, ctx.alerts.open_alerts()) if not a['acked']]),
+            features={'probes': ctx.singbox_enabled and bool(s.get('probes.enabled')), 'stream': ctx.singbox_enabled}, xray=ctx.xray.snapshot(detail=False),
+            primary_engine='xray' if ctx.xray.instances else 'singbox', singbox_enabled=ctx.singbox_enabled,
         )
+
+    @bp.route('/api/xray')
+    def xray_stats():
+        return jsonify(xray_dashboard.present(ctx))
+
+    @bp.route('/api/xray/details')
+    def xray_details():
+        span = request.args.get('range', '24h')
+        span = span if span in ('24h', '7d', '30d') else '24h'
+        return jsonify(xray_dashboard.details(ctx, span))
+
+    @bp.route('/api/xray/network')
+    def xray_network():
+        return jsonify(engine='xray', interfaces=ctx.nic.interfaces(), current=ctx.nic.current(), live=ctx.nic.series_live(300),
+                       scope='网卡收发为整台服务器，包含 Xray、其他服务和协议开销。Xray 载荷只取原生入站计数，不使用 sing-box 流量。')
+
+    @bp.route('/api/xray/probes/run', methods=['POST'])
+    def xray_probe():
+        if not ctx.xray.instances:
+            return error('未配置 Xray', 400)
+        started = ctx.xray.probe_async()
+        ctx.store.record('xray-probe', client_ip(), 'started' if started else 'already-running')
+        return jsonify(ok=True, started=started)
 
     @bp.route('/api/live')
     def live():
@@ -368,7 +400,10 @@ def register(app, ctx):
 
     @bp.route('/api/alerts')
     def alerts():
-        return jsonify(open=ctx.alerts.open_alerts(), recent=ctx.alerts.recent(100))
+        opened, recent = ctx.alerts.open_alerts(), ctx.alerts.recent(100)
+        if request.args.get('engine') == 'xray':
+            opened, recent = xray_dashboard.alerts_for_xray(ctx, opened), xray_dashboard.alerts_for_xray(ctx, recent)
+        return jsonify(open=opened, recent=recent, reachability=ctx.reachability.snapshot())
 
     @bp.route('/api/alerts/ack', methods=['POST'])
     def alerts_ack():
@@ -419,14 +454,15 @@ def register(app, ctx):
         cert = system.certificate(ctx.cert_path())
         return jsonify(
             version=ctx.version, uptime=system.uptime(), started=int(ctx.health['started']),
-            services=system.services(list(s.get('alerts.services') or []) + ['joysol-dashboard.service']),
+            services=system.services(list(s.get('alerts.services') or []) + [i['service'] for i in ctx.xray.instances] + ['joysol-dashboard.service']),
             certificate=cert, disk=system.disk(str(s.data_dir)), database={'bytes': ctx.store.size(), 'migrations': ctx.store.migrations},
             singbox={'version': system.singbox_version(s.get('singbox.binary')), 'config': s.get('singbox.config_path'),
                      'api': s.get('singbox.api_address'), 'error': ctx.topology.error},
             geo=ctx.geo.info(), health=_health(ctx), streams=ctx.hub.count(),
             firewall={'chain': s.get('firewall.chain'), 'ports': ctx.topology.public_ports(),
                       'endpoints': [{'proto': proto, 'port': port} for proto, port in ctx.topology.public_endpoints()]},
-            settings=s.public_view(), gate={'enabled': s.gate_enabled})
+            settings=s.public_view(), gate={'enabled': s.gate_enabled}, xray=ctx.xray.snapshot(detail=False),
+            xray_runtimes=system.xray_runtimes(ctx.xray.instances))
 
     @bp.route('/api/prefs', methods=['GET', 'PUT'])
     def prefs():
@@ -506,13 +542,13 @@ def _editable():
 
 
 def _validate_pref(key, value):
-    if key in ('labels.inbounds', 'labels.outbounds'):
+    if key in ('labels.inbounds', 'labels.outbounds', 'labels.xray'):
         if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) and len(v) <= 40 for k, v in value.items()):
             return '名称需为不超过 40 字的文本'
     elif key == 'entries':
         if not isinstance(value, dict) or not all(v in ('cdn', 'direct') for v in value.values()):
             return '入口类型只能是 cdn 或 direct'
-    elif key in ('probes.enabled', 'network.quality_enabled'):
+    elif key in ('probes.enabled', 'network.quality_enabled', 'reachability.enabled'):
         if not isinstance(value, bool):
             return '需为开关值'
     else:
@@ -522,6 +558,10 @@ def _validate_pref(key, value):
             return '探测间隔至少 60 秒'
         if key == 'network.quality_interval_seconds' and not 30 <= value <= 3600:
             return '采样间隔需在 30 到 3600 秒之间'
+        if key == 'reachability.interval_seconds' and not 600 <= value <= 86400:
+            return '公开大陆检测间隔需在 600 到 86400 秒之间'
+        if key in ('reachability.failures', 'alerts.probe_failures') and (int(value) != value or not 0 <= value <= 100 or key == 'reachability.failures' and value == 0):
+            return '连续失败轮数需为整数，国内检测 1–100，出口探测 0–100（0 关闭）'
     return ''
 
 
@@ -533,7 +573,7 @@ def _origin_verified(s):
 
 def _health(ctx):
     h = ctx.health
-    return {'connected': h['connected'], 'last_event': h['last_event'], 'last_error': h['last_error']}
+    return {'connected': h['connected'], 'last_event': h['last_event'], 'last_error': h['last_error'], 'enabled': ctx.singbox_enabled}
 
 
 def _geo_public(g):

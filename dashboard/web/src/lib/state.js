@@ -1,8 +1,15 @@
 import { reactive } from 'vue'
 import { get } from './api.js'
+import { defaultEngine } from './engines.js'
 
 export const state = reactive({
   overview: null,
+  engine: 'xray',
+  engineInitialized: false,
+  xray: null,
+  xrayError: false,
+  xrayInstance: '',
+  now: Date.now(),
   frame: null,
   samples: [],
   link: 'connecting', // connecting | stream | polling | offline
@@ -21,10 +28,29 @@ export function toast(message, kind = 'info') {
 export async function refreshOverview() {
   try {
     state.overview = await get('api/overview')
+    if (!state.engineInitialized) {
+      state.engine = defaultEngine(state.overview)
+      state.engineInitialized = true
+    }
   } catch (e) {
     toast(e.message, 'error')
   }
   return state.overview
+}
+
+let xrayRequest = null
+export async function refreshXray() {
+  if (xrayRequest) return xrayRequest
+  xrayRequest = fetchXray()
+  try { return await xrayRequest } finally { xrayRequest = null }
+}
+async function fetchXray() {
+  try {
+    state.xray = await get('api/xray')
+    if (state.xrayInstance && !state.xray.instances.some(i => i.id === state.xrayInstance)) state.xrayInstance = ''
+    state.xrayError = false
+  } catch { state.xrayError = true }
+  return state.xray
 }
 
 // Stable entity order → stable colors: outbounds/inbounds keep their config order.

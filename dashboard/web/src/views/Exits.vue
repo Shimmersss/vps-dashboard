@@ -2,7 +2,7 @@
   <div class="grid">
     <section class="card">
       <div class="card-head">
-        <div><h2>出口节点</h2><p>面板每 {{ Math.round((data?.interval || 300) / 60) }} 分钟经各出站的同一上游请求 Cloudflare trace，记录出口公网地址与耗时（含上游握手与 TLS）。{{ data && !data.enabled ? '探测已关闭。' : '' }}</p></div>
+        <div><h2>出口节点</h2><p>面板每 {{ Math.round((data?.interval || 300) / 60) }} 分钟经各出站探测：Cloudflare 回显确认出口 IP，Instagram、YouTube、Facebook 检查 HTTPS 可达性与耗时。成功不代表视频播放、账号登录或带宽测速通过。{{ data && !data.enabled ? '探测已关闭。' : '' }}</p></div>
         <button class="btn sm primary" type="button" :disabled="running" @click="runNow"><Icon name="refresh" :size="14" />{{ running ? '探测中…' : '立即探测' }}</button>
       </div>
       <div class="card-body">

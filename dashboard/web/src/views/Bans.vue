@@ -1,7 +1,7 @@
 <template>
   <div class="grid">
     <section class="card">
-      <div class="card-head"><div><h2>封禁地址</h2><p>支持单个公网 IP 或网段（IPv4 ≥ /{{ minV4 }}，IPv6 ≥ /{{ minV6 }}）。防火墙规则只作用于节点公网端口 {{ ports }}，CDN 入口由回源网关拦截；不影响 SSH 与本面板。</p></div></div>
+      <div class="card-head"><div><h2>封禁地址</h2><p>支持单个公网 IP 或网段（IPv4 ≥ /{{ minV4 }}，IPv6 ≥ /{{ minV6 }}）。防火墙规则只作用于 sing-box 节点公网端口 {{ ports }}，已启用的 CDN 回源网关负责对应入口。Xray WebSocket 入口目前仅监控，此处不控制其访问。</p></div></div>
       <div class="card-body">
         <form class="toolbar" @submit.prevent="submit">
           <input v-model="form.ip" class="input" required placeholder="公网 IP 或网段，如 203.0.113.7 或 203.0.113.0/24" aria-label="地址或网段" size="34">

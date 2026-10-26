@@ -79,6 +79,8 @@ class Topology:
 
     def refresh(self):
         """Reload when the config file changed; cheap to call often."""
+        if not self.settings.get('singbox.enabled'):
+            return False
         try:
             mtime = os.stat(self.path).st_mtime
         except OSError as exc:
