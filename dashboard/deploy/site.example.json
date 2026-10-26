@@ -1,0 +1,25 @@
+{
+  "_comment": "Copy to site.json. Non-secret deployment profile; the SSH target comes from the project .env, secrets from exports/.",
+  "public_url": "https://panel.example.com",
+  "base_path": "/monitor",
+  "origin_tls_port": 8443,
+  "panel_listen": "127.0.0.1:8307",
+  "singbox_api_listen": "127.0.0.1:8306",
+  "remote": {
+    "install_dir": "/opt/joysol-dashboard",
+    "config_dir": "/etc/joysol-dashboard",
+    "data_dir": "/var/lib/joysol-dashboard",
+    "service": "joysol-dashboard.service",
+    "nginx_conf": "/etc/nginx/conf.d/joysol-proxy.conf",
+    "singbox_config": "/etc/sing-box/config.json",
+    "singbox_binary": "/usr/local/bin/sing-box",
+    "singbox_service": "sing-box.service",
+    "backup_dir": "/root"
+  },
+  "settings": {
+    "site": {"title": "节点管理", "timezone": "Asia/Shanghai"},
+    "labels": {"inbounds": {}, "outbounds": {}},
+    "probes": {"enabled": true, "interval_seconds": 300},
+    "alerts": {"services": ["sing-box.service", "nginx.service"]}
+  }
+}

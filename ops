@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+export PYTHONDONTWRITEBYTECODE=1
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/singbox-exit-ops/scripts/ssh_run.py" "$@"

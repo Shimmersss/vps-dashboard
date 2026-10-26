@@ -1,0 +1,18 @@
+[
+  {
+    "cmd": "hostname; uname -sm; uptime",
+    "timeout": 20
+  },
+  {
+    "cmd": "if test -x /etc/sing-box/sing-box; then /etc/sing-box/sing-box version; elif command -v sing-box >/dev/null 2>&1; then sing-box version; else echo 'sing-box not installed at known locations'; fi",
+    "timeout": 20
+  },
+  {
+    "cmd": "systemctl is-active sing-box && systemctl is-enabled sing-box",
+    "timeout": 20
+  },
+  {
+    "cmd": "/usr/local/bin/sing-box check -c /etc/sing-box/config.json",
+    "timeout": 20
+  }
+]

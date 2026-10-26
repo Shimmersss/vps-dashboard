@@ -1,0 +1,21 @@
+// Wire-compatible subset of SagerNet sing-box v1.14.3 daemon/started_service.proto.
+// Upstream: GPL-3.0-or-later, https://github.com/SagerNet/sing-box
+syntax = "proto3";
+package daemon;
+message Empty {}
+message SubscribeConnectionsRequest { int64 interval = 1; }
+message Connection {
+ string id=1; string inbound=2; string inboundType=3; int32 ipVersion=4;
+ string network=5; string source=6; string destination=7; string domain=8;
+ string protocol=9; string user=10; string fromOutbound=11; int64 createdAt=12;
+ int64 closedAt=13; int64 uplink=14; int64 downlink=15; int64 uplinkTotal=16;
+ int64 downlinkTotal=17; string rule=18; string outbound=19; string outboundType=20;
+ repeated string chainList=21;
+}
+message ConnectionEvent { int32 type=1; string id=2; Connection connection=3; int64 uplinkDelta=4; int64 downlinkDelta=5; int64 closedAt=6; }
+message ConnectionEvents { repeated ConnectionEvent events=1; bool reset=2; }
+message CloseConnectionRequest { string id=1; }
+service StartedService {
+ rpc SubscribeConnections(SubscribeConnectionsRequest) returns(stream ConnectionEvents);
+ rpc CloseConnection(CloseConnectionRequest) returns(Empty);
+}

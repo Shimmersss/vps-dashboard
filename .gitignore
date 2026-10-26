@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+*.swp
+.venv/
+.ssh/
+__pycache__/
+.workbuddy/
+outputs/
+exports/
+verification/
+dashboard/web/node_modules/
+dashboard/deploy/geo/*.xdb
+.DS_Store
