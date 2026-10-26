@@ -2,7 +2,7 @@
   <div class="grid">
     <section class="card">
       <div class="card-head">
-        <div><h2>当前连接</h2><p>每 2 秒刷新；速率为最近一个采样周期的平均值。断开只关闭这一条连接，客户端通常会自动重连。</p></div>
+        <div><h2>当前连接（sing-box）</h2><p>每 2 秒刷新；速率为最近一个采样周期的平均值。断开只关闭这一条连接，客户端通常会自动重连。Xray 的节点统计位于“Xray 节点”，不提供逐连接字节。</p></div>
         <div class="toolbar">
           <input v-model="query" class="input" type="search" placeholder="搜索 IP、目标、规则…" aria-label="搜索连接">
           <select v-model="outbound" class="input" aria-label="按出口筛选">

@@ -143,14 +143,15 @@ def probe(target, upstream=None, timeout=12):
     try:
         status, body, connect_ms, total_ms = fetch(target['url'], upstream, timeout)
         result.update(connect_ms=connect_ms, total_ms=total_ms)
-        trace = parse_trace(body) if status == 200 else {}
+        is_http = target.get('kind') == 'http'
+        trace = parse_trace(body) if status == 200 and not is_http else {}
         ip = trace.get('ip', '')
         try:
             ipaddress.ip_address(ip)
         except ValueError:
             ip = ''
         result.update(exit_ip=ip, colo=trace.get('colo', '')[:8], loc=trace.get('loc', '')[:4])
-        if status == 200 and ip:
+        if (is_http and 200 <= status < 400) or (not is_http and status == 200 and ip):
             result['ok'] = 1
         else:
             result['error'] = 'HTTP %d' % status

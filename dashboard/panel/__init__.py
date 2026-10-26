@@ -8,6 +8,7 @@ from flask import Flask
 
 from . import settings as settings_mod
 from .alerts import Alerts
+from .reachability import Reachability
 from .auth import Auth
 from .bans import Bans, Firewall
 from .geo import Geo
@@ -16,9 +17,10 @@ from .netstats import NetworkQueries, Nic, Quality
 from .probes import Prober
 from .store import Store
 from .topology import Topology
+from .xray import Monitor as XrayMonitor
 
 log = logging.getLogger(__name__)
-VERSION = '2.1.0'
+VERSION = '2.4.0'
 
 
 class Context:
@@ -28,6 +30,9 @@ class Context:
         self.settings = settings
         self.version = VERSION
         self.health = {'connected': False, 'last_event': 0, 'last_error': '等待内核事件', 'started': time.time()}
+        self.singbox_enabled = bool(settings.get('singbox.enabled'))
+        if not self.singbox_enabled:
+            self.health['last_error'] = 'sing-box 未启用'
         self.live = Live(settings.get('live.history_seconds'), settings.get('live.top_connections'))
         self.hub = Hub(settings.get('live.max_streams'))
         self.stop = threading.Event()
@@ -41,6 +46,8 @@ class Context:
         self.store.is_banned = self.bans.is_banned
         self.auth = Auth(settings, self.store)
         self.prober = Prober(settings, self.topology, self.store, self.geo)
+        self.xray = XrayMonitor(settings, self.store.day, self.stop)
+        self.reachability = Reachability(settings, self.store, self.stop)
         self.alerts = Alerts(self)
         self.nic = Nic(settings, self.store)
         self.quality = Quality(settings, self.store, self.topology)
@@ -69,9 +76,12 @@ class Context:
 
     def start(self):
         from .collector import Collector
-        self.bans.enforce_all()
-        self.collector = Collector(self)
-        threading.Thread(target=self.collector.run, name='collector', daemon=True).start()
+        if self.singbox_enabled:
+            self.bans.enforce_all()
+            self.collector = Collector(self)
+            threading.Thread(target=self.collector.run, name='collector', daemon=True).start()
+        if self.xray.instances:
+            threading.Thread(target=self.xray.run, name='xray-stats', daemon=True).start()
         threading.Thread(target=self._ticker, name='ticker', daemon=True).start()
         threading.Thread(target=self._maintenance, name='maintenance', daemon=True).start()
 
@@ -97,7 +107,7 @@ class Context:
     def _maintenance(self):
         self.stop.wait(5)
         while not self.stop.is_set():
-            for job in (self.topology.refresh, self.bans.expire, self._probe_if_due, self._quality_if_due, self._prune,
+            for job in (self.topology.refresh, self._expire_bans, self._probe_if_due, self.reachability.start_if_due, self._quality_if_due, self._prune,
                         self.alerts.evaluate):
                 try:
                     job()
@@ -109,13 +119,17 @@ class Context:
         if self.quality.due():
             self.quality.run()
 
+    def _expire_bans(self):
+        if self.singbox_enabled:
+            self.bans.expire()
+
     def _prune(self):
         if time.time() - self.pruned >= 3600:
             self.pruned = time.time()
             self.netq.prune(int(self.settings.get('network.quality_retention_days')), int(self.settings.get('network.minute_retention_days')))
 
     def _probe_if_due(self):
-        if self.prober.due():
+        if self.singbox_enabled and self.prober.due():
             threading.Thread(target=self.prober.run, name='probe', daemon=True).start()
 
 

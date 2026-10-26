@@ -1,4 +1,6 @@
-# 面板
+# sing-box 连接管理版
+
+本文描述 sing-box 版本。Xray 独立配置、节点统计与功能边界见 [Xray 接入](xray.md)，双核心共存见 [共存部署](existing-host.md)。
 
 面板挂在 Nginx 下的子路径（默认 `/monitor/`），域名和路径由 `dashboard/deploy/site.json` 决定。登录凭据和部署密钥只放在本地私有目录（`exports/`，不入库），服务器端只存 PBKDF2 哈希。支持多账户，会话可在面板中查看和撤销。
 
@@ -29,7 +31,7 @@
 
 ## 出口探测
 
-每 5 分钟（可调）经每个 direct / socks / http 出站请求 Cloudflare trace，记录出口地址、机房与耗时。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
+每 5 分钟（可调）经每个 direct / socks / http 出站请求 Cloudflare trace，记录出口地址、机房与耗时；同时检查 Instagram、YouTube 和 Facebook 的 HTTPS 可达性。媒体结果不代表视频播放、解锁或带宽测速。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
 
 ## 配置分层
 

@@ -15,7 +15,7 @@ DEFAULTS = {
         # Public URL users open; the origin is used for CSRF/Origin checks.
         'public_url': 'http://127.0.0.1:8307',
         'base_path': '/monitor',
-        'title': 'Joysol 节点管理',
+        'title': '网络节点监控',
         'timezone': 'Asia/Shanghai',
         'cookie_name': '__Host-joysol_session',
         'cookie_secure': True,
@@ -28,11 +28,13 @@ DEFAULTS = {
         'geo_dir': 'geo',
     },
     'singbox': {
+        'enabled': True,
         'api_address': '127.0.0.1:8306',
         'config_path': '/etc/sing-box/config.json',
         'binary': '/usr/local/bin/sing-box',
         'subscribe_interval_ms': 1000,
     },
+    'xray': {'instances': [], 'poll_seconds': 2},
     'gate': {
         # Enabled once the CDN origin header is verified; see docs/dashboard.md.
         'enabled': False,
@@ -57,15 +59,17 @@ DEFAULTS = {
         'enabled': True,
         'interval_seconds': 300,
         'timeout_seconds': 12,
-        # Cloudflare trace endpoints report the address the request arrived from.
+        # Trace confirms the exit IP; media probes check HTTPS reachability only.
         'targets': [
             {'name': 'trace', 'url': 'https://www.cloudflare.com/cdn-cgi/trace'},
-            {'name': 'chatgpt', 'url': 'https://chatgpt.com/cdn-cgi/trace'},
-            {'name': 'claude', 'url': 'https://claude.ai/cdn-cgi/trace'},
+            {'name': 'Instagram', 'url': 'https://www.instagram.com/', 'kind': 'http'},
+            {'name': 'YouTube', 'url': 'https://www.youtube.com/generate_204', 'kind': 'http'},
+            {'name': 'Facebook', 'url': 'https://www.facebook.com/', 'kind': 'http'},
         ],
         # Outbound tags to skip; empty = probe every supported outbound.
         'skip': [],
     },
+    'reachability': {'enabled': False, 'interval_seconds': 600, 'failures': 2, 'targets': []},
     'live': {
         'history_seconds': 900,
         'top_connections': 60,
@@ -99,16 +103,17 @@ DEFAULTS = {
         'cert_path': '',
     },
     # Display names; keys are sing-box tags. Unlisted tags are shown as-is.
-    'labels': {'inbounds': {}, 'outbounds': {}},
+    'labels': {'inbounds': {}, 'outbounds': {}, 'xray': {}},
     # Per-inbound entry kind override: "cdn" or "direct". Auto-detected otherwise.
     'entries': {},
 }
 
 # Values the panel UI may change at runtime (stored in the database, not the file).
 EDITABLE = {
-    'labels.inbounds', 'labels.outbounds', 'entries',
+    'labels.inbounds', 'labels.outbounds', 'labels.xray', 'entries',
     'alerts.ip_daily_bytes', 'alerts.cert_days', 'alerts.disk_percent',
     'alerts.collector_down_seconds', 'alerts.probe_failures',
+    'reachability.enabled', 'reachability.interval_seconds', 'reachability.failures',
     'probes.interval_seconds', 'probes.enabled',
     'network.quality_enabled', 'network.quality_interval_seconds',
 }
@@ -245,7 +250,13 @@ def load(settings_path=None, secrets_path=None, environ=None):
 
 
 def validate(values, secrets):
-    missing = [k for k in ('username', 'salt', 'password_hash', 'api_secret') if not secrets.get(k)]
+    enabled = get_path(values, 'singbox.enabled', True)
+    if not isinstance(enabled, bool):
+        raise ValueError('singbox.enabled must be a boolean')
+    if not enabled and not get_path(values, 'xray.instances'):
+        raise ValueError('At least one monitoring engine must be configured')
+    required = ('username', 'salt', 'password_hash') + (('api_secret',) if enabled else ())
+    missing = [k for k in required if not secrets.get(k)]
     if missing:
         raise ValueError('secrets file is missing: ' + ', '.join(missing))
     url = urlsplit(get_path(values, 'site.public_url'))

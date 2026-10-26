@@ -3,12 +3,13 @@ import { reactive } from 'vue'
 
 export const ROUTES = [
   { name: 'overview', title: '概览', group: '监控', icon: 'overview' },
-  { name: 'live', title: '实时连接', group: '监控', icon: 'live' },
+  { name: 'xray', title: 'Xray 节点', group: '监控', icon: 'exits' },
+  { name: 'live', title: '实时连接', xrayTitle: '实时速率', group: '监控', icon: 'live' },
   { name: 'topology', title: '链路拓扑', group: '监控', icon: 'topology' },
-  { name: 'map', title: '地理分布', group: '监控', icon: 'map' },
-  { name: 'network', title: '网络质量', group: '监控', icon: 'network' },
-  { name: 'clients', title: '客户端', group: '数据', icon: 'clients' },
-  { name: 'history', title: '连接历史', group: '数据', icon: 'history' },
+  { name: 'map', title: '地理分布', xrayTitle: '出口分布', group: '监控', icon: 'map' },
+  { name: 'network', title: '网络质量', xrayTitle: '网络状态', group: '监控', icon: 'network' },
+  { name: 'clients', title: '客户端', xrayTitle: '在线来源', group: '数据', icon: 'clients' },
+  { name: 'history', title: '连接历史', xrayTitle: '流量记录', group: '数据', icon: 'history' },
   { name: 'daily', title: '每日流量', group: '数据', icon: 'daily' },
   { name: 'exits', title: '出口节点', group: '管理', icon: 'exits' },
   { name: 'bans', title: '访问控制', group: '管理', icon: 'bans' },

@@ -139,6 +139,7 @@ User=root
 WorkingDirectory={install}/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=JOYSOL_CONFIG_DIR={config}
+ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/joysol-dashboard.conf
 ExecStart={install}/venv/bin/python -m gunicorn --bind {panel} --workers 1 --worker-class gthread --threads 16 --timeout 60 --graceful-timeout 10 --access-logfile /dev/null --error-logfile - app:app
 Restart=on-failure
 RestartSec=3
@@ -148,7 +149,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths={data} /run/xtables.lock
+ReadWritePaths={data} -/run/xtables.lock
 # DAC_READ_SEARCH: read the sing-box config (owned by the sing-box user) for topology and probes; read-only.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

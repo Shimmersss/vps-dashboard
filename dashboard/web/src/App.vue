@@ -5,15 +5,21 @@
         <span class="brand-mark"><svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true"><path d="M6 22 L13 10 L19 18 L26 7" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
         <span>{{ title }}<small>v{{ state.overview?.version || '2' }}</small></span>
       </div>
+      <div class="engine-picker">
+        <label class="small muted" for="engine">监控来源</label>
+        <select id="engine" v-model="state.engine" class="input" aria-label="监控来源">
+          <option value="xray" :disabled="state.overview && !state.overview.xray?.enabled">Xray{{ state.overview?.xray?.enabled ? '（主要）' : '（未配置）' }}</option><option value="singbox" :disabled="state.overview?.singbox_enabled === false">sing-box{{ state.overview?.singbox_enabled === false ? '（未启用）' : state.overview?.xray?.enabled ? '（次要）' : '' }}</option>
+        </select>
+      </div>
       <nav v-for="g in groups" :key="g.name" class="nav-group">
         <span>{{ g.name }}</span>
         <NavLink v-for="r in g.routes" :key="r.name" :to="r.name" class="nav-item" :class="{ active: route.name === r.name }" :aria-current="route.name === r.name ? 'page' : null">
           <Icon :name="r.icon" />{{ r.title }}
-          <span v-if="r.name === 'alerts' && state.overview?.alerts" class="count">{{ state.overview.alerts }}</span>
+          <span v-if="r.name === 'alerts' && unread" class="count">{{ unread }}</span>
         </NavLink>
       </nav>
       <div class="sidebar-foot">
-        <span>{{ state.overview?.gate?.enabled ? 'CDN 回源校验已启用' : 'CDN 回源校验未启用' }}</span>
+        <span>{{ state.engine === 'xray' ? 'Xray 原生统计 · 入站口径' : 'sing-box 连接事件' }}</span>
         <span>时区 {{ state.overview?.timezone || '—' }}</span>
       </div>
     </aside>
@@ -29,10 +35,10 @@
       </header>
       <main class="content">
         <div v-if="notice" class="notice" :class="notice.kind"><Icon name="warn" /><span>{{ notice.text }}</span></div>
-        <component :is="views[route.name]" :key="route.name + reloadKey" />
+        <component :is="resolvedView" :section="route.name" :key="state.engine + route.name + reloadKey" />
       </main>
     </div>
-    <IpDrawer v-if="route.ip" :ip="route.ip" />
+    <IpDrawer v-if="route.ip && state.engine === 'singbox'" :ip="route.ip" />
     <ConfirmDialog />
     <div class="toasts" role="status" aria-live="polite">
       <div v-for="t in state.toasts" :key="t.id" class="toast" :class="t.kind">{{ t.message }}</div>
@@ -46,15 +52,17 @@ import Icon from './components/Icon.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import IpDrawer from './components/IpDrawer.vue'
 import Overview from './views/Overview.vue'
-import { ROUTES, route } from './lib/router.js'
-import { state, refreshOverview, toast } from './lib/state.js'
-import { startLive } from './lib/live.js'
+import { ROUTES, route, go } from './lib/router.js'
+import { state, refreshOverview, refreshXray, toast } from './lib/state.js'
+import { startLive, stopLive } from './lib/live.js'
+import { engineStatus } from './lib/engines.js'
 import { toggleTheme } from './lib/theme.js'
 import NavLink from './components/NavLink.vue'
 import { BASE, post } from './lib/api.js'
 
 const lazy = loader => defineAsyncComponent(loader)
 const views = {
+  xray: lazy(() => import('./views/Xray.vue')),
   overview: Overview,
   live: lazy(() => import('./views/Live.vue')),
   topology: lazy(() => import('./views/Topology.vue')),
@@ -69,41 +77,45 @@ const views = {
   security: lazy(() => import('./views/Security.vue')),
   system: lazy(() => import('./views/System.vue')),
 }
-const groups = ['监控', '数据', '管理'].map(name => ({ name, routes: ROUTES.filter(r => r.group === name) }))
-const current = computed(() => ROUTES.find(r => r.name === route.name) || ROUTES[0])
-const title = computed(() => state.overview?.title || '节点管理')
+const XrayMain = lazy(() => import('./views/XrayMain.vue'))
+const shared = new Set(['alerts', 'security'])
+const resolvedView = computed(() => state.engine === 'xray' && !shared.has(route.name) ? XrayMain : views[route.name])
+const activeRoutes = computed(() => ROUTES.filter(r => state.engine === 'xray' || r.name !== 'xray').map(r => ({ ...r, title: state.engine === 'xray' ? r.name === 'xray' ? '节点列表' : r.xrayTitle || r.title : r.title })))
+const groups = computed(() => ['监控', '数据', '管理'].map(name => ({ name, routes: activeRoutes.value.filter(r => r.group === name) })))
+const current = computed(() => activeRoutes.value.find(r => r.name === route.name) || activeRoutes.value[0])
+const title = computed(() => state.overview?.title || '网络节点监控')
 const reloadKey = ref(0)
 
-const linkClass = computed(() => {
-  if (!state.overview?.health?.connected && state.overview) return 'bad'
-  return { stream: 'good', polling: 'warn', offline: 'bad' }[state.link] || ''
-})
-const linkText = computed(() => {
-  if (state.overview && !state.overview.health.connected) return '采集中断'
-  return { stream: '实时', polling: '轮询', offline: '离线', connecting: '连接中' }[state.link]
-})
-const linkTitle = computed(() => state.link === 'polling' ? '实时推送不可用（可能被 CDN 缓冲），已改为每 2 秒轮询' : '内核事件每秒推送')
-const notice = computed(() => {
-  const o = state.overview
-  if (!o) return null
-  if (!o.health.connected) return { kind: 'bad', text: '内核事件采集暂时中断，历史数据仍保留：' + (o.health.last_error || '等待重连') }
-  if (!o.gate.enabled) return { kind: 'warn', text: 'CDN 新连接封禁待回源校验启用；当前仍可封禁直连入口。' }
-  return null
-})
+const health = computed(() => engineStatus(state.engine, state.overview, state.xray, state.xrayError, state.link, state.now))
+const linkClass = computed(() => health.value.kind)
+const linkText = computed(() => health.value.text)
+const linkTitle = computed(() => state.engine === 'xray' ? '来自 Xray 原生入站计数，每 2 秒刷新，未知速率留空' : 'sing-box 连接事件')
+const notice = computed(() => health.value.notice ? { kind: health.value.kind, text: health.value.notice } : null)
+const unread = computed(() => state.engine === 'xray' ? state.overview?.alerts_xray || 0 : state.overview?.alerts || 0)
 
 watch(title, t => { document.title = t + ' · ' + current.value.title }, { immediate: true })
-watch(() => route.name, () => { document.title = title.value + ' · ' + current.value.title })
+watch(current, () => { document.title = title.value + ' · ' + current.value.title })
+watch(() => state.engine, engine => {
+  route.ip = ''
+  stopLive()
+  if (engine === 'xray') refreshXray()
+  else { if (route.name === 'xray') go('overview'); startLive() }
+}, { immediate: true })
 
 let timer = null
+let xrayTimer = null
+const becameVisible = () => { state.now = Date.now(); if (!document.hidden) { refreshOverview(); if (state.engine === 'xray') refreshXray() } }
 onMounted(() => {
   refreshOverview()
-  startLive()
   timer = setInterval(() => { if (!document.hidden) refreshOverview() }, 15000)
+  xrayTimer = setInterval(() => { state.now = Date.now(); if (state.engine === 'xray' && !document.hidden) refreshXray() }, 2000)
+  document.addEventListener('visibilitychange', becameVisible)
 })
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => { clearInterval(timer); clearInterval(xrayTimer); document.removeEventListener('visibilitychange', becameVisible); stopLive() })
 
 function reload() {
   refreshOverview()
+  if (state.engine === 'xray') refreshXray()
   reloadKey.value += 1
 }
 
@@ -112,3 +124,8 @@ async function logout() {
   location.href = BASE + '/login'
 }
 </script>
+
+<style scoped>
+.engine-picker { padding: 0 14px 12px; display: grid; gap: 6px; }
+.engine-picker .input { width: 100%; }
+</style>

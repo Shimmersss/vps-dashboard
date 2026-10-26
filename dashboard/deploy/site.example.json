@@ -17,9 +17,31 @@
     "backup_dir": "/root"
   },
   "settings": {
-    "site": {"title": "节点管理", "timezone": "Asia/Shanghai"},
-    "labels": {"inbounds": {}, "outbounds": {}},
-    "probes": {"enabled": true, "interval_seconds": 300},
-    "alerts": {"services": ["sing-box.service", "nginx.service"]}
+    "site": {
+      "title": "网络节点监控",
+      "timezone": "Asia/Shanghai"
+    },
+    "labels": {
+      "inbounds": {},
+      "outbounds": {},
+      "xray": {}
+    },
+    "probes": {
+      "enabled": true,
+      "interval_seconds": 300
+    },
+    "alerts": {
+      "services": [
+        "sing-box.service",
+        "nginx.service"
+      ]
+    },
+    "singbox": {
+      "enabled": true
+    },
+    "xray": {
+      "instances": [],
+      "poll_seconds": 2
+    }
   }
 }

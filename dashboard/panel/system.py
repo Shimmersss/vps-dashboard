@@ -1,5 +1,6 @@
 """Host status for the system page and alerts: services, certificate, disk, versions."""
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -70,3 +71,26 @@ def uptime():
             return int(float(handle.read().split()[0]))
     except (OSError, ValueError):
         return 0
+
+
+def xray_runtimes(instances):
+    def inspect():
+        rows = []
+        for instance in instances:
+            code, pid = _run(['systemctl', 'show', '--value', '-p', 'MainPID', instance['service']])
+            version = ''
+            if code == 0 and pid.isdigit() and int(pid) > 0:
+                try:
+                    binary = os.readlink('/proc/' + pid + '/exe')
+                except OSError:
+                    status, command = _run(['systemctl', 'show', '--value', '-p', 'ExecStart', instance['service']])
+                    match = re.search(r'\bpath=([^ ;]+)', command) if status == 0 else None
+                    binary = match.group(1) if match else ''
+                if binary:
+                    status, text = _run([binary, 'version'])
+                    if status == 0 and text.startswith('Xray '):
+                        version = text.splitlines()[0]
+            rows.append({'id': instance['id'], 'label': instance.get('label', instance['id']), 'service': instance['service'],
+                         'version': version, 'config': instance['config_path'], 'api': instance['api_address']})
+        return rows
+    return _cached('xray-runtimes:' + ','.join(i['service'] + ':' + i['config_path'] for i in instances), 30, inspect)

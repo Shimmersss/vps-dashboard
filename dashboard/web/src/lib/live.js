@@ -72,3 +72,9 @@ export function startLive() {
     if (Date.now() - lastFrameAt > 7000) startPolling()
   }, 3000)
 }
+
+export function stopLive() {
+  stopStream()
+  clearInterval(pollTimer); pollTimer = null
+  clearInterval(watchdog); watchdog = null
+}
