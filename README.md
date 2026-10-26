@@ -2,7 +2,7 @@
 
 代理服务器的浏览器监控面板，Flask + gunicorn、Vue 3 + ECharts、SQLite。支持 **sing-box 连接管理版**和 **Xray 节点监控版**，也可在同一面板切换两个核心的数据。界面切换不改变实际代理链路。
 
-- `main` 保留原 sing-box 版本；Xray 开发分支 `codex/xray-dual-version` 包含双版本适配，本 PR 合并前不改变 `main`。
+- `main` 保留 sing-box 版本；本 PR 从 `codex/xray-dual-version` 合入独立 `xray` 分支。合入后 `xray` 提供 Xray 监控与双内核切换，`main` 继续独立维护。
 - 旧配置继续默认 sing-box；配置 `xray.instances` 后默认进入 Xray。仅使用 Xray 时设置 `singbox.enabled=false`，无需安装 sing-box。
 - 示例域名/地址均为文档数据；实际凭据、节点配置、订阅及原始验收数据不入库。
 

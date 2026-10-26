@@ -3,7 +3,7 @@ name: Dashboard validation
 on:
   pull_request:
   push:
-    branches: [main, 'codex/**']
+    branches: [main, xray, 'codex/**']
 
 permissions:
   contents: read
