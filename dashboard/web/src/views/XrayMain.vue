@@ -5,7 +5,7 @@
         <div><h2>{{ headings[section] || 'Xray 监控' }}</h2><p>{{ descriptions[section] }}</p></div>
         <div class="toolbar">
           <select v-if="section !== 'system' && section !== 'bans'" v-model="state.xrayInstance" class="input" aria-label="Xray 实例"><option value="">全部 Xray</option><option v-for="i in data?.instances || []" :key="i.id" :value="i.id">{{ i.label }}</option></select>
-          <Seg v-if="section === 'daily'" v-model="dailyKind" :options="dailyKinds" label="统计对象" />
+          <Seg v-if="section === 'daily' && !nodeOnly" v-model="dailyKind" :options="dailyKinds" label="统计对象" />
           <Seg v-if="['overview', 'history', 'daily', 'exits'].includes(section)" v-model="span" :options="ranges" label="时间范围" />
         </div>
       </div>
@@ -17,7 +17,8 @@
         <Kpi label="Xray 实时速率" :value="ratesReady ? rate(totals.up + totals.down) : '—'"><span v-if="ratesReady">↓ {{ rate(totals.down) }} · ↑ {{ rate(totals.up) }}</span><span v-else>等待连续有效采样</span></Kpi>
         <Kpi label="Xray 今日流量" :value="bytes(totals.today)"><span>仅原生入站字节，不重复叠加出站</span></Kpi>
         <Kpi label="Xray 接入后累计" :value="bytes(totals.total)"><span>自 {{ datetime(since * 1000) }}</span></Kpi>
-        <Kpi label="在线用户（核心口径）" :value="onlineUsers == null ? '—' : onlineUsers + ' / ' + users.length"><span>{{ nodes.length }} 个节点 · {{ instances.filter(i => i.connected).length }} / {{ instances.length }} 个实例已连接</span></Kpi>
+        <Kpi v-if="nodeOnly" label="在线节点" :value="activity.label"><span>近 60 秒采样到入站流量{{ activity.unknown ? ' · ' + activity.unknown + ' 个未知' : '' }}</span></Kpi>
+        <Kpi v-else label="在线用户（核心口径）" :value="onlineUsers == null ? '—' : onlineUsers + ' / ' + users.length"><span>{{ nodes.length }} 个节点 · {{ instances.filter(i => i.connected).length }} / {{ instances.length }} 个实例已连接</span></Kpi>
       </div>
       <section class="card">
         <div class="card-head"><div><h2>实时吞吐</h2><p>每 2 秒采样 Xray 原生计数；未知速率留空，采集中断不补零。</p></div></div>
@@ -32,22 +33,22 @@
       </section>
       <div class="grid cols-2">
         <section class="card"><div class="card-head"><h2>实例状态</h2></div><div class="card-body grid"><div v-for="i in instances" :key="i.id" class="toolbar"><Status :kind="i.connected ? 'good' : 'bad'" :text="i.label + (i.connected ? ' · 已连接' : ' · 采集中断')" /><span class="small muted">{{ nodes.filter(n => n.instance === i.id).length }} 个节点 · {{ i.error || '原生统计正常' }}</span></div></div></section>
-        <section class="card"><div class="card-head"><h2>在线来源与出口</h2></div><div class="card-body"><p>核心当前提供 <b>{{ sources.length }}</b> 个来源地址，覆盖 {{ supportedNodes }} / {{ nodes.length }} 个节点。</p><p class="small muted">未提供列表的节点不计作无人在线；经过 CDN/Nginx 时，来源可能是边缘地址。</p><p>实测出口 {{ uniqueExits.length }} 个 · {{ exits.filter(o => o.exit_ip).length }} / {{ exits.length }} 条出站有成功回显。</p></div></section>
+        <section class="card"><div class="card-head"><h2>{{ nodeOnly ? '节点活动与出口' : '在线来源与出口' }}</h2></div><div class="card-body"><p v-if="nodeOnly">{{ activity.active == null ? '等待有效采样' : activity.active + ' 个节点近期有流量' }} · {{ activity.unknown }} 个节点状态未知。</p><p v-if="nodeOnly" class="small muted">按节点自身入站流量判断；无近期流量不代表连接已断开。</p><p v-if="!nodeOnly">核心当前提供 <b>{{ sources.length }}</b> 个来源地址，覆盖 {{ supportedNodes }} / {{ nodes.length }} 个节点。</p><p v-if="!nodeOnly" class="small muted">未提供列表的节点不计作无人在线；经过 CDN/Nginx 时，来源可能是边缘地址。</p><p>实测出口 {{ uniqueExits.length }} 个 · {{ exits.filter(o => o.exit_ip).length }} / {{ exits.length }} 条出站有成功回显。</p></div></section>
       </div>
-      <div class="grid cols-2">
+      <div :class="['grid', nodeOnly ? '' : 'cols-2']">
         <section class="card"><div class="card-head"><h2>流量较高的节点</h2><NavLink class="btn sm" to="xray">全部节点</NavLink></div><div class="card-body flush"><DataTable :columns="rankCols" :rows="ranked" row-key="key" hide-foot><template #cell-label="{ row }">{{ row.label }}<span class="sub">{{ instanceLabel(row.instance) }}</span></template><template #cell-total="{ row }">{{ bytes(row.total) }}</template><template #cell-rate="{ row }">{{ row.fresh && row.down_rate != null ? rate(row.down_rate + row.up_rate) : '—' }}</template></DataTable></div></section>
-        <section class="card"><div class="card-head"><h2>流量较高的用户</h2><NavLink class="btn sm" to="clients">全部用户</NavLink></div><div class="card-body flush"><DataTable :columns="userRankCols" :rows="rankedUsers" row-key="key" hide-foot empty="核心未提供用户计数（需要用户 email 与统计开关）"><template #cell-email="{ row }"><span class="mono">{{ row.email }}</span><span class="sub">{{ instanceLabel(row.instance) }}</span></template><template #cell-total="{ row }">{{ bytes(row.total) }}</template><template #cell-rate="{ row }">{{ row.speed == null ? '—' : rate(row.speed) }}</template></DataTable></div></section>
+        <section v-if="!nodeOnly" class="card"><div class="card-head"><h2>流量较高的用户</h2><NavLink class="btn sm" to="clients">全部用户</NavLink></div><div class="card-body flush"><DataTable :columns="userRankCols" :rows="rankedUsers" row-key="key" hide-foot empty="核心未提供用户计数（需要用户 email 与统计开关）"><template #cell-email="{ row }"><span class="mono">{{ row.email }}</span><span class="sub">{{ instanceLabel(row.instance) }}</span></template><template #cell-total="{ row }">{{ bytes(row.total) }}</template><template #cell-rate="{ row }">{{ row.speed == null ? '—' : rate(row.speed) }}</template></DataTable></div></section>
       </div>
     </template>
 
-    <section v-if="data && ['live', 'xray'].includes(section)" class="card">
-      <div class="card-head"><div><h2>节点速率与流量</h2><p>Xray 未提供逐连接字节与关闭单连接接口；这里每行代表一个实际配置的入站节点。</p></div></div>
+    <section v-if="data && (['live', 'xray'].includes(section) || nodeOnly && section === 'clients')" class="card">
+      <div class="card-head"><div><h2>{{ section === 'clients' ? '节点在线状态' : '节点速率与流量' }}</h2><p>{{ nodeOnly ? '每行代表一个入站节点。在线按近 60 秒采样到真实入站流量判断；静默节点显示无近期流量，采样中断显示未知。' : 'Xray 未提供逐连接字节与关闭单连接接口；每行代表一个入站节点。' }}</p></div></div>
       <div class="card-body flush"><DataTable :columns="nodeCols" :rows="nodes" row-key="key" :page-size="50" empty="等待节点采样">
         <template #cell-label="{ row }"><b>{{ row.label }}</b><span class="sub">{{ instanceLabel(row.instance) }}</span></template>
         <template #cell-transport="{ row }">{{ row.protocol.toUpperCase() }} · {{ row.transport }}{{ row.tls ? ' + TLS' : '' }}<span class="sub">客户端端口 {{ row.port }}</span></template>
         <template #cell-speed="{ row }">{{ row.fresh && row.down_rate != null ? '↓ ' + rate(row.down_rate) : '—' }}<span class="sub">{{ row.fresh && row.up_rate != null ? '↑ ' + rate(row.up_rate) : '等待有效采样' }}</span></template>
         <template #cell-total="{ row }">{{ bytes(row.upload + row.download) }}<span class="sub">今日 {{ bytes(row.today_upload + row.today_download) }}</span></template>
-        <template #cell-online="{ row }">{{ row.online_sources == null ? '未提供' : row.online_sources.length + ' 个来源' }}</template>
+        <template #cell-online="{ row }"><Status v-if="nodeOnly" :kind="row.online_activity === true ? 'good' : row.online_activity == null ? 'warn' : ''" :text="row.online_activity == null ? '未知' : row.online_activity ? '在线' : '无近期流量'" /><span v-else>{{ row.online_sources == null ? '未提供' : row.online_sources.length + ' 个来源' }}</span></template>
         <template #cell-exit="{ row }">{{ outFor(row)?.exit_ip || '未检测' }}<span class="sub">{{ outFor(row)?.geo?.location || '' }}</span></template>
       </DataTable></div>
     </section>
@@ -57,7 +58,7 @@
       <section class="card"><div class="card-body flush"><DataTable :columns="pathCols" :rows="nodes" row-key="key" :page-size="50"><template #cell-instance="{ row }">{{ instanceLabel(row.instance) }}</template><template #cell-label="{ row }">{{ row.label }}</template><template #cell-outbound="{ row }">{{ row.outbound ? outFor(row)?.label : '条件或复杂路由，未假定单一出口' }}</template><template #cell-exit="{ row }">{{ outFor(row)?.exit_ip || '未检测' }}</template><template #cell-total="{ row }">{{ bytes(row.upload + row.download) }}</template></DataTable></div></section>
     </template>
 
-    <template v-if="data && section === 'clients'">
+    <template v-if="data && !nodeOnly && section === 'clients'">
       <section class="card"><div class="card-head"><div><h2>用户流量</h2><p>按 Xray 用户 email 的原生计数；同一用户在多个入站共用一份计数，不分摊到来源 IP。{{ users.some(u => u.total == null) ? '部分用户未开启用户统计，流量显示为未提供。' : '' }}</p></div></div><div class="card-body flush"><DataTable :columns="userCols" :rows="users" row-key="key" sort="total" :page-size="50" empty="配置中没有带 email 的用户">
         <template #cell-email="{ row }"><span class="mono">{{ row.email }}</span><span class="sub">{{ instanceLabel(row.instance) }}</span></template>
         <template #cell-nodes="{ row }">{{ row.nodes.map(nodeLabel).join('、') }}</template>
@@ -76,8 +77,8 @@
     </template>
 
     <template v-if="data && section === 'exits'">
-      <section class="card"><div class="card-head"><div><h2>Xray 媒体出口探测</h2><p>经节点配置的同一上游检查 HTTPS 可达性，Cloudflare trace 单独确认出口 IP。每 {{ Math.round((data.probe_interval || 300) / 60) }} 分钟自动探测。</p></div><button class="btn primary sm" :disabled="data.probe_running" @click="probeNow">{{ data.probe_running ? '探测中…' : '立即探测' }}</button></div><div class="card-body"><p v-if="!data.probes_enabled" class="muted">自动探测已关闭。</p><p v-if="data.probe_error" class="notice warn">最近探测未完成：{{ data.probe_error }}。保留上次结果及时间。</p><div class="exit-grid"><div v-for="out in exits" :key="out.key" class="exit"><div class="exit-head"><b>{{ out.label }}</b><Status v-if="out.probe_at" :kind="out.exit_ip ? 'good' : 'bad'" :text="out.exit_ip ? '回显成功' : '回显失败'" /><span v-else class="tag">待探测</span></div><span class="exit-ip">{{ out.exit_ip || '未检测' }}</span><span class="small muted">{{ instanceLabel(out.instance) }} · {{ out.geo?.location || '' }} {{ out.geo?.isp || '' }}</span><span v-if="out.measured" class="small">出站实测 {{ out.fresh && out.down_rate != null ? '↓ ' + rate(out.down_rate) + ' · ↑ ' + rate(out.up_rate) : '—' }} · 累计 {{ bytes(out.upload + out.download) }}</span><dl class="kv small"><template v-for="name in media" :key="name"><dt>{{ name }}</dt><dd>{{ out.targets[name] ? out.targets[name].ok ? out.targets[name].total_ms + ' ms' : out.targets[name].error || '失败' : '未检测' }}</dd></template></dl><span class="small muted">{{ datetime(out.probe_at * 1000) }}</span></div></div></div></section>
-      <section v-if="outboundRows.length" class="card"><div class="card-head"><div><h2>出站流量</h2><p>Xray 原生出站计数（statsOutbound）；与入站计数是同一批流量的两个观察点，不相加。</p></div></div><div class="card-body flush"><DataTable :columns="outCols" :rows="outboundRows" row-key="key" sort="total" :page-size="50"><template #cell-tag="{ row }"><span class="mono">{{ row.tag }}</span><span class="sub">{{ instanceLabel(row.instance) }}</span></template><template #cell-speed="{ row }">{{ row.speed == null ? '—' : '↓ ' + rate(row.down_rate) + ' · ↑ ' + rate(row.up_rate) }}</template><template #cell-today="{ row }">{{ bytes(row.today) }}</template><template #cell-total="{ row }">{{ bytes(row.total) }}</template></DataTable></div></section>
+      <section class="card"><div class="card-head"><div><h2>Xray 媒体出口探测</h2><p>经节点配置的同一上游检查 HTTPS 可达性，Cloudflare trace 单独确认出口 IP。每 {{ Math.round((data.probe_interval || 300) / 60) }} 分钟自动探测。</p></div><button class="btn primary sm" :disabled="data.probe_running" @click="probeNow">{{ data.probe_running ? '探测中…' : '立即探测' }}</button></div><div class="card-body"><p v-if="!data.probes_enabled" class="muted">自动探测已关闭。</p><p v-if="data.probe_error" class="notice warn">最近探测未完成：{{ data.probe_error }}。保留上次结果及时间。</p><div class="exit-grid"><div v-for="out in exits" :key="out.key" class="exit"><div class="exit-head"><b>{{ out.label }}</b><Status v-if="out.probe_at" :kind="out.exit_ip ? 'good' : 'bad'" :text="out.exit_ip ? '回显成功' : '回显失败'" /><span v-else class="tag">待探测</span></div><span class="exit-ip">{{ out.exit_ip || '未检测' }}</span><span class="small muted">{{ instanceLabel(out.instance) }} · {{ out.geo?.location || '' }} {{ out.geo?.isp || '' }}</span><span v-if="!nodeOnly && out.measured" class="small">出站实测 {{ out.fresh && out.down_rate != null ? '↓ ' + rate(out.down_rate) + ' · ↑ ' + rate(out.up_rate) : '—' }} · 累计 {{ bytes(out.upload + out.download) }}</span><dl class="kv small"><template v-for="name in media" :key="name"><dt>{{ name }}</dt><dd>{{ out.targets[name] ? out.targets[name].ok ? out.targets[name].total_ms + ' ms' : out.targets[name].error || '失败' : '未检测' }}</dd></template></dl><span class="small muted">{{ datetime(out.probe_at * 1000) }}</span></div></div></div></section>
+      <section v-if="!nodeOnly && outboundRows.length" class="card"><div class="card-head"><div><h2>出站流量</h2><p>Xray 原生出站计数（statsOutbound）；与入站计数是同一批流量的两个观察点，不相加。</p></div></div><div class="card-body flush"><DataTable :columns="outCols" :rows="outboundRows" row-key="key" sort="total" :page-size="50"><template #cell-tag="{ row }"><span class="mono">{{ row.tag }}</span><span class="sub">{{ instanceLabel(row.instance) }}</span></template><template #cell-speed="{ row }">{{ row.speed == null ? '—' : '↓ ' + rate(row.down_rate) + ' · ↑ ' + rate(row.up_rate) }}</template><template #cell-today="{ row }">{{ bytes(row.today) }}</template><template #cell-total="{ row }">{{ bytes(row.total) }}</template></DataTable></div></section>
       <section class="card"><div class="card-head"><div><h2>出口回显历史</h2><p>从本次更新开始保存，最多 7 天；展示最近 {{ probeRows.length }} 次{{ detail?.probe_history_truncated ? '（已截断）' : '' }}，不回填此前记录。</p></div></div><div class="card-body flush"><DataTable :columns="probeCols" :rows="probeRows" sort="at" :page-size="50" empty="等待第一轮新探测"><template #cell-at="{ row }">{{ datetime(row.at * 1000) }}</template><template #cell-label="{ row }">{{ outMap[row.instance + ':' + row.tag]?.label || instanceLabel(row.instance) }}</template><template #cell-exit="{ row }">{{ row.targets.trace?.ok ? row.targets.trace.exit_ip : '回显失败' }}</template><template #cell-media="{ row }">{{ media.map(name => name + ' ' + (row.targets[name]?.ok ? '✓' : '失败')).join(' · ') }}</template></DataTable></div></section>
     </template>
 
@@ -99,7 +100,7 @@
           <template v-if="data.runtimes[i.id]"><dt>核心运行</dt><dd>{{ duration(data.runtimes[i.id].uptime) }} · 内存 {{ bytes(data.runtimes[i.id].memory) }} · 协程 {{ data.runtimes[i.id].goroutines }}</dd></template>
           <template v-for="c in capabilityRows(i.id)" :key="c[0]"><dt>{{ c[0] }}</dt><dd>{{ c[1] }}</dd></template></dl></div></div></section><section class="card"><div class="card-head"><h2>证书与存储</h2></div><div class="card-body"><dl class="kv"><dt>站点证书</dt><dd>{{ system.certificate.days_left == null ? '未提供' : system.certificate.days_left + ' 天后到期' }}</dd><dt>服务器运行</dt><dd>{{ duration(system.uptime) }}</dd><dt>磁盘使用</dt><dd>{{ bytes(system.disk.used) }} / {{ bytes(system.disk.total) }}</dd><dt>监控来源</dt><dd>Xray · 原生统计</dd><dt>累计开始</dt><dd>{{ datetime(since * 1000) }}</dd></dl></div></section></div>
       <section class="card"><div class="card-head"><div><h2>Xray 节点显示名称</h2><p>只修改面板名称，保持原节点配置、认证和路由。</p></div><button class="btn primary sm" :disabled="saving" @click="saveLabels">保存名称</button></div><div class="card-body grid cols-2"><label v-for="n in data.nodes" :key="n.key" class="field"><span class="small muted">{{ instanceLabel(n.instance) }} · {{ n.label }}</span><input v-model="draftLabels[n.key]" class="input" maxlength="40" :placeholder="n.label" :aria-label="n.label + ' 显示名称'"></label></div></section>
-      <section class="card"><div class="card-head"><div><h2>告警与探测</h2><p>保存后立即生效。Xray 不提供单 IP 字节，流量阈值按用户 email 计算。</p></div><button class="btn primary sm" :disabled="saving" @click="saveSettings">保存设置</button></div><div class="card-body toolbar"><label v-for="(label, key) in settingLabels" :key="key" class="field"><span>{{ label }}</span><input v-model.number="settings[key]" class="input" type="number" min="0" :aria-label="label"></label><label class="field"><span>单用户日流量告警（GB，0 关闭）</span><input v-model.number="quotaGb" class="input" type="number" min="0" step="0.5" aria-label="单用户日流量告警"></label><label class="field">自动出口探测<select v-model="settings['probes.enabled']" class="input"><option :value="true">开启</option><option :value="false">关闭</option></select></label></div></section>
+      <section class="card"><div class="card-head"><div><h2>告警与探测</h2><p>保存后立即生效。{{ nodeOnly ? '仅统计节点入站流量。' : '流量阈值按用户 email 计算。' }}</p></div><button class="btn primary sm" :disabled="saving" @click="saveSettings">保存设置</button></div><div class="card-body toolbar"><label v-for="(label, key) in settingLabels" :key="key" class="field"><span>{{ label }}</span><input v-model.number="settings[key]" class="input" type="number" min="0" :aria-label="label"></label><label v-if="!nodeOnly" class="field"><span>单用户日流量告警（GB，0 关闭）</span><input v-model.number="quotaGb" class="input" type="number" min="0" step="0.5" aria-label="单用户日流量告警"></label><label class="field">自动出口探测<select v-model="settings['probes.enabled']" class="input"><option :value="true">开启</option><option :value="false">关闭</option></select></label></div></section>
     </template>
   </div>
 </template>
@@ -118,24 +119,29 @@ import Kpi from '../components/Kpi.vue'
 import NavLink from '../components/NavLink.vue'
 import Seg from '../components/Seg.vue'
 import Status from '../components/Status.vue'
+import { nodeActivity, nodeActivitySummary } from '../lib/node-activity.js'
 
 const props = defineProps({ section: { type: String, default: 'overview' } })
 const data = computed(() => state.xray)
+const nodeOnly = computed(() => !!data.value?.node_only)
+const activity = computed(() => nodeActivitySummary(nodes.value, state.now / 1000, state.xrayError))
 const span = ref('24h'), detail = ref(null), network = ref(null), system = ref(null), mapReady = ref(false), saving = ref(false)
 const draftLabels = reactive({}), settings = reactive({})
 const ranges = [{ value: '24h', label: '24 小时' }, { value: '7d', label: '7 天' }, { value: '30d', label: '30 天' }]
 const dailyKind = ref('nodes')
-const dailyKinds = [{ value: 'nodes', label: '节点' }, { value: 'users', label: '用户' }, { value: 'outbounds', label: '出站' }]
+watch(nodeOnly, enabled => { if (enabled) dailyKind.value = 'nodes' })
+const dailyKinds = computed(() => nodeOnly.value ? [{ value: 'nodes', label: '节点' }] : [{ value: 'nodes', label: '节点' }, { value: 'users', label: '用户' }, { value: 'outbounds', label: '出站' }])
 const GB = 1024 ** 3
 const quotaGb = ref(0)
 const media = computed(() => data.value?.probe_targets || ['Instagram', 'YouTube', 'Facebook'])
-const headings = { overview: 'Xray 概览', xray: 'Xray 节点列表', live: 'Xray 实时速率', topology: 'Xray 链路拓扑', map: 'Xray 出口分布', network: 'Xray 网络状态', clients: 'Xray 用户与来源', history: 'Xray 流量记录', daily: 'Xray 每日流量', exits: 'Xray 出口节点', bans: 'Xray 访问控制', system: 'Xray 系统与设置' }
-const descriptions = { overview: '首页统计来自 Xray 原生入站计数，不混入其他内核流量。', live: '节点字节、速率与采样时间均来自 Xray。', xray: '读取现有节点配置与原生计数，保留主入口和对照入口的独立统计。', topology: '按结构化入站路由生成链路，复杂路由不假定单一出口。', clients: '用户流量与在线地址来自 Xray 原生计数，未提供的数据保持未知。', history: '真实持久采样记录，不伪装为逐连接访问历史。', daily: '按站点时区查看 Xray 日累计。', exits: '实测回显与主流媒体 HTTPS 检查；不代表播放、账号登录或地区解锁。', map: '地理位置来自本地离线数据库。', network: 'Xray 载荷与整机网卡指标分别标明来源。', system: '查看 Xray 核心版本、服务状态和面板设置。', bans: '启用后封禁 Xray 公网入站端口的来源地址。' }
+const headings = computed(() => ({ overview: 'Xray 概览', xray: 'Xray 节点列表', live: 'Xray 实时速率', topology: 'Xray 链路拓扑', map: 'Xray 出口分布', network: 'Xray 网络状态', clients: nodeOnly.value ? 'Xray 在线节点' : 'Xray 用户与来源', history: 'Xray 流量记录', daily: 'Xray 每日流量', exits: 'Xray 出口节点', bans: 'Xray 访问控制', system: 'Xray 系统与设置' }))
+const descriptions = computed(() => ({ overview: '首页统计来自 Xray 原生入站计数，不混入其他内核流量。', live: '节点字节、速率与采样时间均来自 Xray。', xray: '读取现有节点配置与原生计数，保留主入口和对照入口的独立统计。', topology: '按结构化入站路由生成链路，复杂路由不假定单一出口。', clients: nodeOnly.value ? '按节点自身入站流量观察近期活动；不额外发送网络探测。' : '用户流量与在线地址来自 Xray 原生计数，未提供的数据保持未知。', history: '真实持久采样记录，不伪装为逐连接访问历史。', daily: '按站点时区查看 Xray 日累计。', exits: '实测回显与主流媒体 HTTPS 检查；不代表播放、账号登录或地区解锁。', map: '地理位置来自本地离线数据库。', network: 'Xray 载荷与整机网卡指标分别标明来源。', system: '查看 Xray 核心版本、服务状态和面板设置。', bans: '启用后封禁 Xray 公网入站端口的来源地址。' }))
 const selected = computed(() => state.xrayInstance)
 const instances = computed(() => (data.value?.instances || []).filter(i => !selected.value || i.id === selected.value))
 const nodes = computed(() => (data.value?.nodes || []).filter(n => !selected.value || n.instance === selected.value).map(raw => {
-  const n = raw.fresh && !state.xrayError && state.now / 1000 - raw.sampled_at <= 15 ? raw : { ...raw, fresh: false, up_rate: null, down_rate: null, online_sources: null }
-  return { ...n, total: n.upload + n.download, speed: n.up_rate == null ? null : n.up_rate + n.down_rate, online: n.online_sources?.length ?? null, exit: outMap.value[n.outbound_key]?.exit_ip || '' }
+  const n = raw.fresh && !state.xrayError && state.now / 1000 - raw.sampled_at <= 15 ? raw : { ...raw, fresh: false, up_rate: null, down_rate: null, online_sources: null, online_activity: null }
+  const onlineActivity = nodeActivity(n, state.now / 1000, state.xrayError)
+  return { ...n, online_activity: onlineActivity, total: n.upload + n.download, speed: n.up_rate == null ? null : n.up_rate + n.down_rate, online: nodeOnly.value ? onlineActivity == null ? -1 : Number(onlineActivity) : n.online_sources?.length ?? null, exit: outMap.value[n.outbound_key]?.exit_ip || '' }
 }))
 const exits = computed(() => (data.value?.outbounds || []).filter(o => !selected.value || o.instance === selected.value).map(o => ({ ...o, location: o.geo?.location || '', isp: o.geo?.isp || '', precision: o.geo?.precision || '' })))
 const sources = computed(() => (data.value?.sources || []).filter(s => s.nodes.some(k => nodes.value.some(n => n.key === k && n.fresh && n.online_sources?.includes(s.ip)))))
@@ -168,10 +174,10 @@ const rankCols = [{ key: 'label', label: '节点' }, { key: 'total', label: '累
 const userRankCols = [{ key: 'email', label: '用户' }, { key: 'total', label: '累计流量' }, { key: 'rate', label: '当前速率' }]
 const userCols = [{ key: 'email', label: '用户（email）' }, { key: 'nodes', label: '入站' }, { key: 'online', label: '在线地址' }, { key: 'speed', label: '速率' }, { key: 'today', label: '今日' }, { key: 'total', label: '累计' }]
 const outCols = [{ key: 'tag', label: '出站' }, { key: 'protocol', label: '协议' }, { key: 'speed', label: '速率' }, { key: 'today', label: '今日' }, { key: 'total', label: '累计' }]
-const nodeCols = [{ key: 'label', label: '节点' }, { key: 'transport', label: '传输' }, { key: 'speed', label: '速率' }, { key: 'total', label: '累计 / 今日' }, { key: 'online', label: '在线来源（核心口径）' }, { key: 'exit', label: '实测出口' }]
+const nodeCols = computed(() => [{ key: 'label', label: '节点' }, { key: 'transport', label: '传输' }, { key: 'speed', label: '速率' }, { key: 'total', label: '累计 / 今日' }, { key: 'online', label: nodeOnly.value ? '在线状态' : '在线来源（核心口径）' }, { key: 'exit', label: '实测出口' }])
 const pathCols = [{ key: 'instance', label: '实例' }, { key: 'label', label: '入口' }, { key: 'outbound', label: '出站' }, { key: 'exit', label: '实测出口' }, { key: 'total', label: '累计入站字节' }]
 const sourceCols = [{ key: 'ip', label: '核心观察地址' }, { key: 'nodes', label: '节点' }, { key: 'location', label: '定位' }, { key: 'isp', label: '网络' }, { key: 'sampled_at', label: '采样时间' }]
-const dailyCols = computed(() => [{ key: 'day', label: '日期' }, { key: 'instance', label: '实例' }, { key: 'label', label: dailyKinds.find(k => k.value === dailyKind.value).label }, { key: 'upload', label: '上传' }, { key: 'download', label: '下载' }])
+const dailyCols = computed(() => [{ key: 'day', label: '日期' }, { key: 'instance', label: '实例' }, { key: 'label', label: dailyKinds.value.find(k => k.value === dailyKind.value).label }, { key: 'upload', label: '上传' }, { key: 'download', label: '下载' }])
 const historyCols = [{ key: 'ts', label: '采样时段' }, { key: 'instance', label: '实例' }, { key: 'upload', label: '上传增量' }, { key: 'download', label: '下载增量' }]
 const probeCols = [{ key: 'at', label: '时间' }, { key: 'label', label: '出口' }, { key: 'exit', label: '回显地址' }, { key: 'media', label: '媒体可达性' }]
 const geoCols = [{ key: 'label', label: '出口' }, { key: 'exit_ip', label: '实测地址' }, { key: 'location', label: '定位' }, { key: 'isp', label: '网络' }, { key: 'precision', label: '精度' }]
@@ -180,6 +186,7 @@ const settingLabels = { 'alerts.collector_down_seconds': '采集中断告警（�
 function capabilityRows(id) {
   const st = data.value?.instances.find(i => i.id === id) || {}
   if (!st.connected) return []
+  if (nodeOnly.value) return [['统计口径', '仅节点入站'], ['在线节点', '近 60 秒采样到真实入站流量'], ['访问控制', data.value?.capabilities?.access_control ? '已启用' : '未启用']]
   return [['用户统计', st.user_stats ? '已开启' : '未开启（叠加文件需开启用户等级统计）'],
     ['出站统计', st.outbound_stats ? '已开启' : '未开启（重新运行 enable-xray-stats.py）'],
     ['在线地址接口', st.users_api ? 'GetUsersStats（v26.10+）' : st.users_api === false ? '逐用户查询（较早版本核心）' : '无用户'],
@@ -239,7 +246,7 @@ async function loadSystem() {
 async function probeNow() { try { await post('api/xray/probes/run'); await refreshXray() } catch (e) { toast(e.message, 'error') } }
 async function save(body) { saving.value = true; try { await put('api/prefs', body); await refreshXray(); toast('已保存', 'ok') } catch (e) { toast(e.message, 'error') } finally { saving.value = false } }
 const saveLabels = () => save({ 'labels.xray': Object.fromEntries(Object.entries(draftLabels).filter(([, v]) => String(v).trim()).map(([k, v]) => [k, String(v).trim()])) })
-const saveSettings = () => save({ ...settings, 'alerts.xray_user_daily_bytes': Math.max(0, Math.round(Number(quotaGb.value || 0) * GB)) })
+const saveSettings = () => save({ ...settings, ...(!nodeOnly.value ? { 'alerts.xray_user_daily_bytes': Math.max(0, Math.round(Number(quotaGb.value || 0) * GB)) } : {}) })
 let timer, networkTimer, disposed = false
 onMounted(async () => {
   loadDetails()

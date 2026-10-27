@@ -41,6 +41,48 @@ class XrayTest(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(ValueError):
                 xray.validate_instance(self.instance | patch)
 
+    def test_node_only_activity_is_per_inbound_and_becomes_unknown_when_stale(self):
+        from unittest.mock import patch
+        c = config()
+        other = json.loads(json.dumps(c['inbounds'][0])); other.update(tag='in-b', port=12002)
+        c['inbounds'].append(other)  # Both nodes deliberately share one user.
+        self.path.write_text(json.dumps(c))
+        self.settings.values['xray']['node_only'] = True
+        traffic = {'a': 0}
+        class Fake:
+            def __init__(self, instance): pass
+            def counters(self):
+                return {'inbound>>>in-a>>>traffic>>>uplink': traffic['a'], 'inbound>>>in-a>>>traffic>>>downlink': 0,
+                        'inbound>>>in-b>>>traffic>>>uplink': 0, 'inbound>>>in-b>>>traffic>>>downlink': 0}
+            def online_users(self): raise AssertionError('Node-only mode must not request users')
+            def online(self, email): raise AssertionError('Node-only mode must not request user addresses')
+            def runtime(self): return {}
+        m = xray.Monitor(self.settings, lambda t: '2026-01-01', threading.Event(), Fake, lambda i: 'g')
+        try:
+            with patch('panel.xray.time.time', return_value=100):
+                m.poll(); self.assertIsNone(m.snapshot()['totals']['online_nodes'])
+            traffic['a'] = 4096
+            for moment in range(102, 163, 2):
+                with patch('panel.xray.time.time', return_value=moment): m.poll()
+            reopened = xray.Ledger(self.settings)
+            persisted = reopened.ingest('main', 'g', {'in-a': (4096, 0)}, 162, '2026-01-01')['in-a']
+            self.assertEqual(persisted['last_activity'], 102, 'Panel restart must preserve recent node activity')
+            reopened.db.close()
+            with patch('panel.xray.time.time', return_value=162):
+                snap = m.snapshot()
+                self.assertEqual(snap['totals']['online_nodes'], 1)
+                self.assertEqual([n['online_activity'] for n in snap['nodes']], [True, False])
+                self.assertEqual(snap['users'], []); self.assertEqual(snap['outbound_stats'], [])
+                self.assertTrue(all(n['online_sources'] is None for n in snap['nodes']))
+            with patch('panel.xray.time.time', return_value=164):
+                m.poll(); self.assertEqual(m.snapshot()['totals']['online_nodes'], 0)
+            with patch('panel.xray.time.time', return_value=180):
+                self.assertIsNone(m.snapshot()['totals']['online_nodes'])
+                self.assertEqual(m.snapshot()['totals']['online_nodes_unknown'], 2)
+            self.assertEqual(m.ledger.db.execute('SELECT COUNT(*) FROM user_counters').fetchone()[0], 0)
+        finally:
+            m.ledger.db.close()
+
     def test_topology_private_credentials_and_exact_route(self):
         nodes, credentials = xray.topology(self.instance)
         self.assertEqual(nodes[0]['outbound'], 'out-a')

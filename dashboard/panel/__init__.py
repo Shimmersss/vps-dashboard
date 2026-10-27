@@ -20,7 +20,7 @@ from .topology import Topology
 from .xray import Monitor as XrayMonitor, public_endpoints as xray_endpoints
 
 log = logging.getLogger(__name__)
-VERSION = '2.5.0'
+VERSION = '2.5.3'
 
 
 class Context:

@@ -91,6 +91,18 @@ class DashboardTest(unittest.TestCase):
         self.assertIsNone(x['nodes'][0]['down_rate'])
         self.assertFalse(x['instances'][0]['connected'])
 
+    def test_node_only_details_hide_user_and_outbound_data_without_deleting_history(self):
+        self.ctx.settings.values['xray']['node_only'] = True
+        ledger = self.ctx.xray.ledger
+        for kind in ['user', 'outbound']:
+            ledger.ingest('main', 'g', {'fixture': (0, 0)}, self.now - 2, self.ctx.store.day(), kind)
+            ledger.ingest('main', 'g', {'fixture': (10, 20)}, self.now, self.ctx.store.day(), kind)
+        details = self.client.get('/monitor/api/xray/details').get_json()
+        self.assertEqual(details['user_daily'], []); self.assertEqual(details['outbound_daily'], [])
+        self.assertTrue(details['daily'])
+        for table in ['user_counters', 'out_counters']:
+            self.assertEqual(ledger.db.execute('SELECT total_up+total_down FROM ' + table).fetchone()[0], 30)
+
     def test_users_measured_outbounds_and_user_quota_alert(self):
         day = self.ctx.store.day()
         self.ctx.xray.ledger.ingest('main', 'g', {'a@x': (0, 0)}, self.now - 4, day, 'user')
