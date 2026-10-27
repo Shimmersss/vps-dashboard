@@ -122,6 +122,11 @@ def public_endpoints(instance):
 
 def online_levels(instance):
     """User levels whose online tracking is on in the effective policy (main config, then stats overlay)."""
+    return policy_levels(instance, 'statsUserOnline')
+
+
+def policy_levels(instance, *switches):
+    """User levels with every given policy switch on in the effective policy (main config, then stats overlay)."""
     policy = {}
     overlay = instance.get('stats_overlay') or '/etc/joysol-xray/%s-stats.json' % instance['id']
     for path in (instance['config_path'], overlay):
@@ -129,7 +134,7 @@ def online_levels(instance):
             policy = json.loads(Path(path).read_text()).get('policy') or policy
         except (OSError, ValueError):
             continue
-    return {int(k) for k, v in (policy.get('levels') or {}).items() if str(k).isdigit() and v.get('statsUserOnline')}
+    return {int(k) for k, v in (policy.get('levels') or {}).items() if str(k).isdigit() and all(v.get(s) for s in switches)}
 
 
 def topology(instance):
@@ -335,10 +340,15 @@ class Monitor:
                         members.setdefault(email, []).append(node['key'])
                 ips = self._online(i, client, levels)
                 users = {}
-                for email in levels:
+                counted = policy_levels(i, 'statsUserUplink', 'statsUserDownlink')
+                for email, level in levels.items():
                     names = ['user>>>' + email + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
                     if all(name in raw for name in names):
                         users[email] = tuple(raw[name] for name in names)
+                    elif level in counted:
+                        # Xray creates a user's counters on that user's first connection: until then it has moved
+                        # zero bytes, and the first value seen later must count in full rather than become a baseline.
+                        users[email] = (0, 0)
                 outbound = {}
                 for out in outbound_list(i):
                     names = ['outbound>>>' + out['tag'] + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]

@@ -127,6 +127,37 @@ class XrayTest(unittest.TestCase):
         self.assertEqual(ledger.user_day_totals('2026-01-01'), [{'instance': 'main', 'email': 'u@x', 'total': 77}])
         ledger.db.close()
 
+    def test_user_counter_created_after_first_sample_counts_in_full(self):
+        state = {'user': None}
+        class Fake:
+            users_api = True
+            def __init__(self, instance): pass
+            def counters(self):
+                raw = {'inbound>>>in-a>>>traffic>>>uplink': 0, 'inbound>>>in-a>>>traffic>>>downlink': 0}
+                if state['user'] is not None:
+                    raw |= {'user>>>test@example.invalid>>>traffic>>>uplink': state['user'][0], 'user>>>test@example.invalid>>>traffic>>>downlink': state['user'][1]}
+                return raw
+            def online_users(self): return {}
+            def runtime(self): return None
+        def poll_user():
+            m.poll()
+            return m.snapshot(detail=False)['users'][0]
+        overlay = self.path.with_name('policy.json')
+        overlay.write_text(json.dumps({'policy': {'levels': {'0': {'statsUserUplink': True, 'statsUserDownlink': True}}}}))
+        self.instance['stats_overlay'] = str(overlay)
+        m = xray.Monitor(self.settings, lambda t: '2026-01-01', threading.Event(), Fake, lambda i: 'g')
+        m.instances[0]['stats_overlay'] = str(overlay)
+        self.assertEqual(poll_user()['upload'], 0, 'no counter yet with stats on: the user has moved nothing')
+        state['user'] = (300, 4000)
+        user = poll_user()
+        self.assertEqual((user['upload'], user['download']), (300, 4000), 'the first traffic is not swallowed as a baseline')
+        overlay.write_text(json.dumps({'policy': {'levels': {'0': {}}}}))
+        state['user'] = None
+        m.ledger.db.execute('DELETE FROM user_counters')
+        m.user_rows.clear()
+        self.assertIsNone(poll_user()['upload'], 'user stats off in policy is unknown, not zero')
+        m.ledger.db.close()
+
     def test_poll_reads_users_outbounds_and_online_semantics(self):
         state = {'up': 100, 'bulk': {'test@example.invalid': {'198.51.100.7': 5, 'not-an-ip': 1}}}
         class Fake:
