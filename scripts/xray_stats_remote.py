@@ -83,7 +83,8 @@ def build_overlay(configs, api_address):
     else:
         overlay['api'] = {'tag': API_TAG, 'listen': api_address, 'services': ['StatsService']}
     policy = copy.deepcopy(last_defined(configs, 'policy') or {})
-    policy.setdefault('system', {}).update(statsInboundUplink=True, statsInboundDownlink=True)
+    policy.setdefault('system', {}).update(statsInboundUplink=True, statsInboundDownlink=True,
+                                           statsOutboundUplink=True, statsOutboundDownlink=True)
     levels = {0}
     for config in configs:
         for inbound in config.get('inbounds') or []:

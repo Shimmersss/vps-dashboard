@@ -72,7 +72,19 @@ class Alerts:
             day = ctx.store.day()
             for r in ctx.store.reader().execute('SELECT ip,upload+download b FROM daily WHERE day=? AND upload+download>=?', (day, threshold)):
                 found['quota:%s:%s' % (day, r['ip'])] = ('quota', 'warning', '%s 今日流量超过阈值' % r['ip'])
+        self._xray_quota(found)
         self._sync(found)
+
+    def _xray_quota(self, found):
+        ctx = self.ctx
+        threshold = int(ctx.settings.get('alerts.xray_user_daily_bytes') or 0)
+        if threshold <= 0 or not ctx.xray.ledger:
+            return
+        day = ctx.store.day()
+        for row in ctx.xray.ledger.user_day_totals(day):
+            if row['total'] >= threshold:
+                key = 'xray:quota:%s:%s' % (day, hashlib.sha256((row['instance'] + '\x1f' + row['email']).encode()).hexdigest()[:24])
+                found[key] = ('quota', 'warning', 'Xray 用户 %s 今日流量超过阈值' % row['email'])
 
     def _xray_media(self, found):
         ctx, s = self.ctx, self.ctx.settings

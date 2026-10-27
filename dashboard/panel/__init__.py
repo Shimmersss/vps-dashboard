@@ -17,10 +17,10 @@ from .netstats import NetworkQueries, Nic, Quality
 from .probes import Prober
 from .store import Store
 from .topology import Topology
-from .xray import Monitor as XrayMonitor
+from .xray import Monitor as XrayMonitor, public_endpoints as xray_endpoints
 
 log = logging.getLogger(__name__)
-VERSION = '2.4.0'
+VERSION = '2.5.0'
 
 
 class Context:
@@ -41,7 +41,10 @@ class Context:
         settings.apply_overrides(self.store.prefs())
         self.topology = Topology(settings)
         self.geo = Geo(settings)
-        firewall = Firewall(settings.get('firewall.chain'), self.topology.public_endpoints, firewall_runner)
+        self.xray_bans = bool(settings.get('xray.access_control') and settings.get('xray.instances'))
+        # Access control covers sing-box node ports, and Xray public node ports when enabled.
+        self.bans_enabled = self.singbox_enabled or self.xray_bans
+        firewall = Firewall(settings.get('firewall.chain'), self.public_endpoints, firewall_runner)
         self.bans = Bans(self.store, firewall, settings)
         self.store.is_banned = self.bans.is_banned
         self.auth = Auth(settings, self.store)
@@ -66,6 +69,16 @@ class Context:
         self.topology.mtime = None
         self.topology.refresh()
 
+    def public_endpoints(self):
+        found = set(self.topology.public_endpoints()) if self.singbox_enabled or self.settings.get('firewall.ports') else set()
+        if self.xray_bans and not self.settings.get('firewall.ports'):
+            for instance in self.settings.get('xray.instances'):
+                try:
+                    found.update(xray_endpoints(instance))
+                except (OSError, ValueError):
+                    log.error('Xray inbound ports unavailable for %s', instance['id'])
+        return sorted(found)
+
     def close_connections(self, ids):
         if self.collector:
             for cid in ids:
@@ -76,8 +89,9 @@ class Context:
 
     def start(self):
         from .collector import Collector
-        if self.singbox_enabled:
+        if self.bans_enabled:
             self.bans.enforce_all()
+        if self.singbox_enabled:
             self.collector = Collector(self)
             threading.Thread(target=self.collector.run, name='collector', daemon=True).start()
         if self.xray.instances:
@@ -120,7 +134,7 @@ class Context:
             self.quality.run()
 
     def _expire_bans(self):
-        if self.singbox_enabled:
+        if self.bans_enabled:
             self.bans.expire()
 
     def _prune(self):

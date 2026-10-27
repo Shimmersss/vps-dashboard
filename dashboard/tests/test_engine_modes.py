@@ -1,6 +1,7 @@
 """Both install profiles, without a production server or firewall."""
 import json
 from pathlib import Path
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -100,6 +101,48 @@ class EngineModesTest(unittest.TestCase):
         self.assertIn('127.0.0.1:8307', unit)
         self.assertNotIn('CAP_NET_ADMIN', unit)
         self.assertNotIn('/run/xtables.lock', unit)
+
+
+class XrayAccessControlTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='xray-acl-')
+        core = Path(self.tmp.name) / 'xray.json'
+        core.write_text(json.dumps({'inbounds': [
+            {'tag': 'reality', 'protocol': 'vless', 'port': 443, 'settings': {'clients': []}, 'streamSettings': {'network': 'raw'}},
+            {'tag': 'ws', 'protocol': 'vless', 'listen': '127.0.0.1', 'port': 10080, 'settings': {'clients': []}, 'streamSettings': {'network': 'ws'}}],
+            'outbounds': [{'tag': 'direct', 'protocol': 'freedom'}]}))
+        instance = {'id': 'main', 'label': 'Test Xray', 'service': 'xray.service', 'api_address': '127.0.0.1:8311', 'config_path': str(core)}
+        self.root = helpers.make_env(extra={'singbox': {'enabled': False}, 'xray': {'instances': [instance], 'access_control': True}})
+        self.firewall = helpers.FakeFirewall()
+        self.app, self.ctx = helpers.make_app(self.root, self.firewall)
+        self.client = self.app.test_client()
+        self.csrf, _ = helpers.login(self.client)
+
+    def tearDown(self):
+        for client in self.ctx.xray.clients.values(): client.channel.close()
+        self.ctx.xray.ledger.db.close()
+        helpers.cleanup(self.root); self.tmp.cleanup()
+
+    def test_bans_cover_public_xray_ports_and_gate_only(self):
+        headers = {'Origin': helpers.ORIGIN, 'X-CSRF-Token': self.csrf}
+        self.assertTrue(self.ctx.bans_enabled)
+        self.assertEqual(self.ctx.public_endpoints(), [('tcp', 443)], 'loopback WS behind Nginx is left to the gate')
+        r = self.client.post('/monitor/api/ban', json={'action': 'ban', 'ip': '8.8.4.4'}, headers=headers)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.firewall.jumps, {('tcp', 443, 'JOYSOL_NODE_BANS')})
+        self.assertIn(('JOYSOL_NODE_BANS', '-p', 'tcp', '-s', '8.8.4.4', '-j', 'REJECT', '--reject-with', 'tcp-reset'), self.firewall.rules)
+        gate = {'X-Origin-Guard': 'g' * 64, 'X-ESA-Client-IP': '8.8.4.4'}
+        self.assertEqual(self.client.get('/internal/gate', headers=gate).status_code, 403)
+        self.assertTrue(self.client.get('/monitor/api/overview').get_json()['features']['xray_bans'])
+        self.assertEqual(self.client.post('/monitor/api/connections/close', json={'id': 'x'}, headers=headers).status_code, 409)
+        r = self.client.post('/monitor/api/ban', json={'action': 'unban', 'ip': '8.8.4.4'}, headers=headers)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(self.firewall.rules)
+
+    def test_access_control_must_be_boolean(self):
+        values = settings_mod.merge(settings_mod.DEFAULTS, {'xray': {'access_control': 'yes'}})
+        with self.assertRaises(ValueError):
+            settings_mod.validate(values, self.ctx.settings.secrets)
 
 
 if __name__ == '__main__':

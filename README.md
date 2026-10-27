@@ -9,12 +9,14 @@
 | 能力 | sing-box（连接管理） | Xray（节点监控） |
 | --- | --- | --- |
 | 数据来源 | 原生 API 连接事件 | 原生只读 StatsService，默认 2 秒采样，`reset=false` |
-| 流量 | 逐连接：来源 IP、目标、入站、出站 | 按实例 / 入站：累计、今日、实时速率 |
+| 流量 | 逐连接：来源 IP、目标、入站、出站 | 按实例 / 入站 / 用户（email）/ 出站：累计、今日、实时速率 |
+| 在线 | 逐连接来源 IP | 按用户的在线地址（核心口径） |
 | 拓扑 / 地图 | 客户端 → 入口 → 规则 → 出口 | 配置中的入站 / 出站与实测出口；不虚构客户端位置 |
-| 历史 | 连接汇总、分钟 / 小时序列 | 独立账本：实例分钟 / 小时增量、自然日统计 |
-| 断开 / 封禁 | 单连接断开；iptables 封禁（TCP / UDP 入站）；CDN 回源网关 | 只读，不提供 |
+| 历史 | 连接汇总、分钟 / 小时序列 | 独立账本：实例分钟 / 小时增量；节点、用户、出站的自然日统计 |
+| 断开 / 封禁 | 单连接断开；iptables 封禁（TCP / UDP 入站）；CDN 回源网关 | 不能断开单连接；可选 iptables 封禁公网入站端口（`xray.access_control`），回环入口走同一个回源网关 |
 | 出口探测 | 经各出站请求探测目标，trace 回显确认出口 IP | 同一套目标，只对能确定唯一出口的路由探测 |
-| 告警 / 账号 / 审计 | 共用 | 共用 |
+| 告警 | 共用；单 IP 日流量阈值 | 共用；单用户日流量阈值 |
+| 账号 / 审计 | 共用 | 共用 |
 
 两种统计口径相互独立：Xray 缺失或过期的数据显示“未知”，不会用 sing-box 的数据补齐。
 
@@ -23,7 +25,7 @@
 | 模式 | site.json 设置 | 说明 |
 | --- | --- | --- |
 | 只用 sing-box | 默认 | 原有部署方式 |
-| 只用 Xray | `settings.singbox.enabled=false`，并填写 `settings.xray.instances` | 先用 `enable-xray-stats.py` 打开回环统计接口；面板不需要 sing-box，也没有防火墙权限 |
+| 只用 Xray | `settings.singbox.enabled=false`，并填写 `settings.xray.instances` | 先用 `enable-xray-stats.py` 打开回环统计接口；面板不需要 sing-box，默认没有防火墙权限 |
 | 两者共存 | 保留 sing-box，再填写 `settings.xray.instances` | 默认显示 Xray，侧栏可以切换数据来源 |
 
 三种模式都用同一个部署脚本，它会先检查服务器，再备份，最后切换版本，失败会自动回滚；新服务器也能直接部署。详见 [部署模式](docs/deployment.md)。
@@ -47,7 +49,7 @@ cp dashboard/deploy/site.example.json dashboard/deploy/site.json   # 填写域�
 .venv/bin/python -B scripts/deploy-dashboard.py --check-only
 ```
 
-本地预览面板（sing-box 合成数据，不连接任何服务器）：`python dashboard/dev/devserver.py`。
+本地预览面板（sing-box 合成数据，不连接任何服务器）：`python dashboard/dev/devserver.py`；加 `--xray /path/to/xray` 会同时启动一个只监听回环的真实 Xray，预览 Xray 页面。
 
 ## 测试
 
@@ -58,7 +60,7 @@ XRAY_TEST_BINARY=/path/to/xray python -B -W ignore::ResourceWarning -m unittest 
 cd ../web && npm ci && node --test tests/engines.test.mjs && npm run build
 ```
 
-`test_xray` 里的原生测试会在回环地址、临时目录里用虚构配置启动一个真实的 Xray，验证 gRPC 接口和计数。CI（`.github/workflows/dashboard.yml`）固定使用 Xray v26.3.27，并核对官方发布包的 SHA256。
+`test_xray` 里的原生测试会在回环地址、临时目录里用虚构配置启动一个真实的 Xray（SOCKS → VLESS 用户 → freedom），验证 gRPC 接口，以及入站、用户、出站计数和在线地址。CI（`.github/workflows/dashboard.yml`）固定使用 Xray v26.10.21，并核对官方发布包的 SHA256；本地也用 v26.3.27 测过。
 
 ## 安全说明
 

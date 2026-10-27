@@ -56,7 +56,7 @@
 - 后端 `dashboard/panel/`（入口 `dashboard/app.py`）；前端 `dashboard/web/`（Vite + Vue 3 + ECharts），构建产物在 `dashboard/static/app/`，服务器不需要 Node。
 - 前端构建：`cd dashboard/web && npm run build`。
 - 测试：`cd dashboard/tests && python3.10 -m unittest test_panel test_media_probes test_xray test_xray_dashboard test_alert_sources test_engine_modes`，离线运行，不依赖防火墙或 sing-box；`test_xray` 的原生测试需要 `XRAY_TEST_BINARY` 指向真实 Xray。前端：`node --test tests/engines.test.mjs`。
-- 本地预览：`python dashboard/dev/devserver.py`（合成数据）。
+- 本地预览：`python dashboard/dev/devserver.py`（合成数据）；加 `--xray /path/to/xray` 同时预览 Xray 页面（真实本地核心）。
 - 部署：`.venv/bin/python -B scripts/deploy-dashboard.py`，加 `--check-only` 只做只读预检；模式（sing-box / Xray / 共存）由 site.json 决定，见 [部署模式](deployment.md)。流程：
   1. 只读预检；
   2. 上传新版本到 releases 目录；

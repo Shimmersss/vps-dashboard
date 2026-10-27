@@ -93,6 +93,8 @@ class XrayTest(unittest.TestCase):
                 if self.fail: raise RuntimeError('secret must not be returned')
                 return {'inbound>>>in-a>>>traffic>>>uplink': 100, 'inbound>>>in-a>>>traffic>>>downlink': 200}
             def online(self, email): return None
+            def online_users(self): return None
+            def runtime(self): return {}
         m = xray.Monitor(self.settings, lambda t: '2026-01-01', threading.Event(), Fake, lambda i: 'g')
         m.poll(); first = m.snapshot()
         self.assertTrue(first['instances'][0]['connected'])
@@ -101,9 +103,75 @@ class XrayTest(unittest.TestCase):
         m.poll(); last = m.snapshot()
         self.assertIsNone(last['nodes'][0]['up_rate'])
         self.assertFalse(last['nodes'][0]['fresh'])
-        for secret in ['fixture-secret', 'test@example.invalid', 'secret must not be returned']:
+        for secret in ['fixture-secret', '00000000-0000-4000-8000-000000000001', 'secret must not be returned']:
             self.assertNotIn(secret, json.dumps(last))
+        # The email is the operator's user label: listed per user, never attached to node rows.
+        self.assertNotIn('test@example.invalid', json.dumps(last['nodes']))
+        self.assertEqual(last['users'][0]['email'], 'test@example.invalid')
         m.ledger.db.close()
+
+    def test_user_and_outbound_ledgers_never_feed_instance_totals(self):
+        ledger = xray.Ledger(self.settings)
+        ledger.ingest('main', 'g1', {'in-a': (0, 0)}, 100, '2026-01-01')
+        ledger.ingest('main', 'g1', {'u@x': (0, 0)}, 100, '2026-01-01', 'user')
+        ledger.ingest('main', 'g1', {'direct': (0, 0)}, 100, '2026-01-01', 'outbound')
+        self.assertEqual(ledger.ingest('main', 'g1', {'in-a': (10, 20)}, 102, '2026-01-01')['in-a']['upload'], 10)
+        user = ledger.ingest('main', 'g1', {'u@x': (7, 70)}, 102, '2026-01-01', 'user')['u@x']
+        self.assertEqual((user['upload'], user['download'], user['down_rate']), (7, 70, 35))
+        restarted = ledger.ingest('main', 'g2', {'direct': (5, 9)}, 104, '2026-01-01', 'outbound')['direct']
+        self.assertEqual((restarted['upload'], restarted['download']), (5, 9))
+        self.assertEqual(sum(r['upload'] for r in ledger.series(104)), 10, 'only inbound bytes enter the minute series')
+        detail = ledger.details(0, '2026-01-01')
+        self.assertEqual(detail['user_daily'][0]['email'], 'u@x')
+        self.assertEqual(detail['outbound_daily'][0]['download'], 9)
+        self.assertEqual(ledger.user_day_totals('2026-01-01'), [{'instance': 'main', 'email': 'u@x', 'total': 77}])
+        ledger.db.close()
+
+    def test_poll_reads_users_outbounds_and_online_semantics(self):
+        state = {'up': 100, 'bulk': {'test@example.invalid': {'198.51.100.7': 5, 'not-an-ip': 1}}}
+        class Fake:
+            def __init__(self, instance): self.users_api = None
+            def counters(self):
+                return {'inbound>>>in-a>>>traffic>>>uplink': state['up'], 'inbound>>>in-a>>>traffic>>>downlink': 200,
+                        'user>>>test@example.invalid>>>traffic>>>uplink': state['up'] // 2, 'user>>>test@example.invalid>>>traffic>>>downlink': 90,
+                        'outbound>>>out-a>>>traffic>>>uplink': 40, 'outbound>>>out-a>>>traffic>>>downlink': 50}
+            def online(self, email): return {'203.0.113.9': 3}
+            def online_users(self):
+                self.users_api = state['bulk'] is not None
+                return state['bulk']
+            def runtime(self): return {'uptime': 9, 'goroutines': 3, 'memory': 1, 'heap': 1, 'gc': 0}
+        m = xray.Monitor(self.settings, lambda t: '2026-01-01', threading.Event(), Fake, lambda i: 'g')
+        m.poll(); state['up'] = 120; m.poll()
+        snap = m.snapshot()
+        user = snap['users'][0]
+        self.assertEqual((user['email'], user['nodes'], user['online_ips']), ('test@example.invalid', ['main:in-a'], ['198.51.100.7']))
+        self.assertEqual(user['upload'], 10)
+        self.assertEqual(snap['nodes'][0]['online_sources'], ['198.51.100.7'])
+        self.assertEqual(snap['outbound_stats'][0]['tag'], 'out-a')
+        self.assertEqual(snap['totals']['upload'], 20, 'user and outbound bytes must not be added to node totals')
+        self.assertEqual(snap['runtimes']['main']['uptime'], 9)
+        self.assertTrue(snap['instances'][0]['users_api'])
+        state['bulk'] = {}
+        m.poll()
+        self.assertIsNone(m.snapshot()['users'][0]['online_ips'], 'online tracking off in policy is unknown, not zero')
+        self.path.with_name('policy.json').write_text(json.dumps({'policy': {'levels': {'0': {'statsUserOnline': True}}}}))
+        m.instances[0]['stats_overlay'] = str(self.path.with_name('policy.json'))
+        m.poll()
+        self.assertEqual(m.snapshot()['users'][0]['online_ips'], [], 'tracked level absent from GetUsersStats has nobody online')
+        state['bulk'] = None
+        m.poll()
+        self.assertEqual(m.snapshot()['users'][0]['online_ips'], ['203.0.113.9'], 'older cores fall back to per-user calls')
+        m.ledger.db.close()
+
+    def test_public_endpoints_skip_loopback_and_map_udp(self):
+        c = config()
+        c['inbounds'] += [{'tag': 'reality', 'protocol': 'vless', 'port': 443, 'settings': {'clients': []}, 'streamSettings': {'network': 'raw', 'security': 'reality'}},
+                          {'tag': 'kcp', 'protocol': 'vmess', 'listen': '0.0.0.0', 'port': 8443, 'streamSettings': {'network': 'kcp'}},
+                          {'tag': 'ss', 'protocol': 'shadowsocks', 'listen': '::', 'port': 8388, 'settings': {'network': 'tcp,udp'}},
+                          {'tag': 'unix', 'protocol': 'vless', 'listen': '/run/x.sock', 'port': 0},
+                          {'tag': 'api', 'protocol': 'dokodemo-door', 'port': 9000}]
+        self.path.write_text(json.dumps(c))
+        self.assertEqual(xray.public_endpoints(self.instance), [('tcp', 443), ('tcp', 8388), ('udp', 8388), ('udp', 8443)])
 
     def test_routes_require_login_and_csrf(self):
         app, ctx = helpers.make_app(self.root)
@@ -127,18 +195,38 @@ class WireTest(unittest.TestCase):
             response = pb.GetStatsOnlineIpListResponse(name=req.name)
             response.ips['198.51.100.7'] = 123
             return response
+        missing = [False]
+        def users(req, context):
+            seen.append(('users', req.reset))
+            if missing[0]:
+                context.abort(grpc.StatusCode.UNIMPLEMENTED, 'unknown method')
+            response = pb.GetUsersStatsResponse()
+            response.users.add(email='test@example.invalid').ips.add(ip='198.51.100.8', last_seen=456)
+            return response
+        def sysstats(req, context):
+            return pb.SysStatsResponse(Uptime=77, NumGoroutine=5)
         server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=2))
         server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler('xray.app.stats.command.StatsService', {
             'QueryStats': grpc.unary_unary_rpc_method_handler(query, request_deserializer=pb.QueryStatsRequest.FromString, response_serializer=pb.QueryStatsResponse.SerializeToString),
             'GetStatsOnlineIpList': grpc.unary_unary_rpc_method_handler(online, request_deserializer=pb.GetStatsRequest.FromString, response_serializer=pb.GetStatsOnlineIpListResponse.SerializeToString),
+            'GetUsersStats': grpc.unary_unary_rpc_method_handler(users, request_deserializer=pb.GetUsersStatsRequest.FromString, response_serializer=pb.GetUsersStatsResponse.SerializeToString),
+            'GetSysStats': grpc.unary_unary_rpc_method_handler(sysstats, request_deserializer=pb.SysStatsRequest.FromString, response_serializer=pb.SysStatsResponse.SerializeToString),
         }),))
         port = server.add_insecure_port('127.0.0.1:0'); server.start()
         try:
             c = xray.Client({'id': 'wire', 'api_address': '127.0.0.1:' + str(port), 'service': 'test.service'})
             self.assertEqual(c.counters()['inbound>>>local>>>traffic>>>uplink'], 123)
             self.assertEqual(c.online('test@example.invalid'), {'198.51.100.7': 123})
+            self.assertEqual(c.online_users(), {'test@example.invalid': {'198.51.100.8': 456}})
+            self.assertTrue(c.users_api)
+            self.assertEqual(c.runtime()['uptime'], 77)
             self.assertTrue(all(not reset for _, reset in seen))
             c.channel.close()
+            old = xray.Client({'id': 'old', 'api_address': '127.0.0.1:' + str(port), 'service': 'test.service'})
+            missing[0] = True
+            self.assertIsNone(old.online_users())
+            self.assertIs(old.users_api, False)
+            old.channel.close()
         finally:
             server.stop(0).wait()
 
@@ -150,7 +238,14 @@ class NativeCoreTest(unittest.TestCase):
         def free_port():
             with socket.socket() as s:
                 s.bind(('127.0.0.1', 0)); return s.getsockname()[1]
-        api, inbound = free_port(), free_port()
+        api, inbound, node = free_port(), free_port(), free_port()
+        # The core leaves 127.0.0.1 and ::1 out of online lists; Linux can source the VLESS hop from 127.0.0.2.
+        try:
+            with socket.socket() as probe_source:
+                probe_source.bind(('127.0.0.2', 0))
+            source = '127.0.0.2'
+        except OSError:
+            source = ''
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 body = b'xray-real-local-traffic-' * 1000
@@ -160,8 +255,18 @@ class NativeCoreTest(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True);thread.start()
         with tempfile.TemporaryDirectory(prefix='xray-native-') as folder:
             base, overlay = Path(folder) / 'base.json', Path(folder) / 'stats.json'
-            base.write_text(json.dumps({'log': {'loglevel': 'none'}, 'inbounds': [{'tag': 'local', 'protocol': 'socks', 'listen': '127.0.0.1', 'port': inbound, 'settings': {'auth': 'noauth'}}], 'outbounds': [{'tag': 'direct', 'protocol': 'freedom'}], 'routing': {'rules': [{'type': 'field', 'inboundTag': ['local'], 'outboundTag': 'direct'}]}}))
-            overlay.write_text(json.dumps({'stats': {}, 'api': {'tag': 'monitor-api', 'listen': '127.0.0.1:' + str(api), 'services': ['StatsService']}, 'policy': {'system': {'statsInboundUplink': True, 'statsInboundDownlink': True}}}))
+            # socks -> VLESS chain -> VLESS node (one email user) -> freedom, all on loopback in one process.
+            uid, email = '00000000-0000-4000-8000-000000000002', 'native@example.invalid'
+            base.write_text(json.dumps({'log': {'loglevel': 'none'},
+                'inbounds': [{'tag': 'local', 'protocol': 'socks', 'listen': '127.0.0.1', 'port': inbound, 'settings': {'auth': 'noauth'}},
+                             {'tag': 'node', 'protocol': 'vless', 'listen': '127.0.0.1', 'port': node, 'settings': {'decryption': 'none', 'clients': [{'id': uid, 'email': email}]}}],
+                # v26.10 freedom blocks private targets unless a final rule allows them.
+                'outbounds': [{'tag': 'direct', 'protocol': 'freedom', 'settings': {'finalRules': [{'action': 'allow', 'ip': ['127.0.0.1/32']}]}},
+                              {'tag': 'chain', 'protocol': 'vless', **({'sendThrough': source} if source else {}), 'settings': {'vnext': [{'address': '127.0.0.1', 'port': node, 'users': [{'id': uid, 'encryption': 'none'}]}]}}],
+                'routing': {'rules': [{'type': 'field', 'inboundTag': ['local'], 'outboundTag': 'chain'}, {'type': 'field', 'inboundTag': ['node'], 'outboundTag': 'direct'}]}}))
+            overlay.write_text(json.dumps({'stats': {}, 'api': {'tag': 'monitor-api', 'listen': '127.0.0.1:' + str(api), 'services': ['StatsService']},
+                                           'policy': {'system': {'statsInboundUplink': True, 'statsInboundDownlink': True, 'statsOutboundUplink': True, 'statsOutboundDownlink': True},
+                                                      'levels': {'0': {'statsUserUplink': True, 'statsUserDownlink': True, 'statsUserOnline': True}}}}))
             before = base.read_bytes()
             command = [str(binary), 'run', '-config', str(base), '-config', str(overlay)]
             check = subprocess.run(command + ['-test'], capture_output=True, timeout=15)
@@ -179,8 +284,25 @@ class NativeCoreTest(unittest.TestCase):
                 self.assertGreater(len(r.stdout), 20000)
                 counters = c.counters()
                 self.assertGreater(counters['inbound>>>local>>>traffic>>>downlink'], initial['inbound>>>local>>>traffic>>>downlink'])
-                self.assertEqual(base.read_bytes(), before)
+                self.assertGreater(counters['user>>>' + email + '>>>traffic>>>downlink'], 20000)
+                self.assertGreater(counters['outbound>>>direct>>>traffic>>>downlink'], 20000)
                 self.assertEqual(c.counters(), counters, 'QueryStats must never reset counters')
+                self.assertGreaterEqual(c.runtime()['goroutines'], 1)
+                # Online addresses are listed only while a connection is open: hold one through SOCKS.
+                with socket.create_connection(('127.0.0.1', inbound), timeout=5) as held:
+                    held.sendall(b'\x05\x01\x00'); held.recv(2)
+                    held.sendall(b'\x05\x01\x00\x01\x7f\x00\x00\x01' + server.server_port.to_bytes(2, 'big')); held.recv(10)
+                    held.sendall(b'GET / HTTP/1.1\r\n')  # an unfinished request keeps the chain open
+                    for _ in range(20):
+                        online = c.online_users()
+                        # GetUsersStats exists from v26.10; older cores report it unimplemented and use per-user calls.
+                        found = online.get(email, {}) if c.users_api else c.online(email) or {}
+                        if not source or source in found:
+                            break
+                        time.sleep(.1)
+                    if source:
+                        self.assertIn(source, found)
+                self.assertEqual(base.read_bytes(), before)
             finally:
                 c.channel.close();proc.terminate()
                 try: proc.wait(timeout=5)

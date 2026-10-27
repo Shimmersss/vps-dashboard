@@ -25,6 +25,7 @@ Xray 实例的写法：
 - `config_path` 是该实例实际加载的主配置文件；面板从这里读取入站和出站。
 - `api_address` 必须是回环地址。
 - 可选 `stats_overlay`：统计叠加文件的位置，默认 `/etc/joysol-xray/<id>-stats.json`。
+- 可选 `settings.xray.access_control`（默认 `false`）：封禁 Xray 公网入站端口的来源地址，见 [Xray 接入](xray.md#2-访问控制可选)。
 
 ## 只用 sing-box
 
@@ -54,7 +55,7 @@ Xray 实例的写法：
    .venv/bin/python -B scripts/deploy-dashboard.py
    ```
 
-这个模式下，面板不读取 sing-box 配置，不启动连接采集、iptables 封禁和 sing-box 出口探测，对应的接口会明确拒绝。systemd 单元只保留读取配置所需的 `CAP_DAC_READ_SEARCH`，没有防火墙权限，也不依赖 `/run/xtables.lock`。
+这个模式下，面板不读取 sing-box 配置，不启动连接采集和 sing-box 出口探测，对应的接口会明确拒绝。默认 systemd 单元只保留读取配置所需的 `CAP_DAC_READ_SEARCH`，没有防火墙权限，也不依赖 `/run/xtables.lock`；设了 `xray.access_control=true` 时才加上防火墙权限，封禁作用于 Xray 的公网入站端口。
 
 ## 两者共存
 
@@ -62,7 +63,7 @@ Xray 实例的写法：
 2. 对每个 Xray 实例运行 `enable-xray-stats.py`。sing-box 和 Xray 的 API 要用不同的回环端口。
 3. 运行 `deploy-dashboard.py`。健康检查要求 sing-box 采集正常、所有 Xray 实例都采样成功，才算部署成功。
 
-登录后，侧栏的“监控来源”可以切换查看两个核心的数据。切换只改变显示，不会重启或改写任何核心。sing-box 的封禁和 CDN 网关不覆盖 Xray 的入口。
+登录后，侧栏的“监控来源”可以切换查看两个核心的数据。切换只改变显示，不会重启或改写任何核心。封禁默认只作用于 sing-box 的入站端口；设了 `xray.access_control=true` 后，Xray 的公网入站端口也加入同一条防火墙链。
 
 ## 部署脚本做什么
 
@@ -99,4 +100,5 @@ Xray 实例的写法：
 - 用实际域名和系统 CA 访问 HTTPS，逐项检查：登录、匿名访问被拒绝、CSRF、静态资源、来源切换、真实计数和探测。
 - 计数要先记基线，再经节点协议做一次真实请求，核对增量。面板重启不应重置核心计数，也不应重复累计。
 - 面板版本回退：把 `current` 链接指回上一个 release，然后重启面板服务。
+- 关闭 Xray 访问控制：先在面板里解除相关封禁，再把 `xray.access_control` 设回 `false` 并重新部署。
 - 撤销 Xray 统计：删除 `/etc/systemd/system/<服务>.d/zz-joysol-dashboard-stats.conf`，再执行 `systemctl daemon-reload` 并重启 Xray。叠加文件可以保留，也可以删除。

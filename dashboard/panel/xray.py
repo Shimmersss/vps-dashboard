@@ -2,6 +2,8 @@
 
 Never synthesises per-connection bytes or attributes a user's aggregate bytes to
 an IP. Counters are read without reset; persistent baselines prevent replays.
+Inbound, user (email) and outbound counters keep separate ledgers; only inbound
+bytes feed the instance totals, so the same traffic is never added twice.
 """
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
@@ -50,10 +52,36 @@ class Client:
                                                   response_deserializer=pb.QueryStatsResponse.FromString)
         self.online_rpc = self.channel.unary_unary(pb.ONLINE, request_serializer=pb.GetStatsRequest.SerializeToString,
                                                    response_deserializer=pb.GetStatsOnlineIpListResponse.FromString)
+        self.users_rpc = self.channel.unary_unary(pb.USERS, request_serializer=pb.GetUsersStatsRequest.SerializeToString,
+                                                  response_deserializer=pb.GetUsersStatsResponse.FromString)
+        self.sys_rpc = self.channel.unary_unary(pb.SYS, request_serializer=pb.SysStatsRequest.SerializeToString,
+                                                response_deserializer=pb.SysStatsResponse.FromString)
+        # None until probed; False on cores older than v26.10 (per-user calls are used instead).
+        self.users_api = None
 
     def counters(self):
-        reply = self.query_rpc(pb.QueryStatsRequest(pattern='inbound>>>', reset=False), timeout=4)
+        """Inbound, user and outbound traffic counters in one read-only query."""
+        reply = self.query_rpc(pb.QueryStatsRequest(pattern='>>>traffic>>>', reset=False), timeout=4)
         return {s.name: max(0, s.value) for s in reply.stat}
+
+    def online_users(self):
+        """{email: {ip: last_seen}} for users with online addresses, or None when the core lacks GetUsersStats."""
+        if self.users_api is False:
+            return None
+        try:
+            reply = self.users_rpc(pb.GetUsersStatsRequest(include_traffic=False, reset=False), timeout=3)
+        except grpc.RpcError as exc:
+            if exc.code() == grpc.StatusCode.UNIMPLEMENTED:
+                self.users_api = False
+                return None
+            raise
+        self.users_api = True
+        return {u.email: {e.ip: e.last_seen for e in u.ips} for u in reply.users}
+
+    def runtime(self):
+        reply = self.sys_rpc(pb.SysStatsRequest(), timeout=2)
+        return {'uptime': reply.Uptime, 'goroutines': reply.NumGoroutine, 'memory': reply.Sys, 'heap': reply.Alloc,
+                'gc': reply.NumGC}
 
     def online(self, email):
         try:
@@ -63,6 +91,45 @@ class Client:
             if exc.code() in (grpc.StatusCode.NOT_FOUND, grpc.StatusCode.UNIMPLEMENTED):
                 return None
             raise
+
+
+NODE_PROTOCOLS = ('vmess', 'vless', 'trojan', 'shadowsocks', 'socks', 'http')
+
+
+def public_endpoints(instance):
+    """(protocol, port) of node inbounds listening on a public address; loopback ones sit behind Nginx."""
+    config = json.loads(Path(instance['config_path']).read_text())
+    found = set()
+    for inbound in config.get('inbounds', []):
+        listen, port = str(inbound.get('listen') or '0.0.0.0'), inbound.get('port')
+        if inbound.get('protocol') not in NODE_PROTOCOLS or not str(port).isdigit() or listen.startswith(('/', '@')):
+            continue
+        try:
+            if ipaddress.ip_address(listen.strip('[]')).is_loopback:
+                continue
+        except ValueError:
+            pass
+        settings = inbound.get('settings') or {}
+        network = (inbound.get('streamSettings') or {}).get('network', 'tcp')
+        protos = {'udp'} if network == 'kcp' else {'tcp'}
+        if inbound['protocol'] == 'shadowsocks' and 'udp' in str(settings.get('network', '')):
+            protos.add('udp')
+        if inbound['protocol'] == 'socks' and settings.get('udp'):
+            protos.add('udp')
+        found.update((proto, int(port)) for proto in protos)
+    return sorted(found)
+
+
+def online_levels(instance):
+    """User levels whose online tracking is on in the effective policy (main config, then stats overlay)."""
+    policy = {}
+    overlay = instance.get('stats_overlay') or '/etc/joysol-xray/%s-stats.json' % instance['id']
+    for path in (instance['config_path'], overlay):
+        try:
+            policy = json.loads(Path(path).read_text()).get('policy') or policy
+        except (OSError, ValueError):
+            continue
+    return {int(k) for k, v in (policy.get('levels') or {}).items() if str(k).isdigit() and v.get('statsUserOnline')}
 
 
 def topology(instance):
@@ -88,7 +155,7 @@ def topology(instance):
                                     'username': user.get('user', ''), 'password': user.get('pass', '')}
     nodes = []
     for index, inbound in enumerate(config.get('inbounds', [])):
-        if inbound.get('protocol') not in ('vmess', 'vless', 'trojan', 'shadowsocks', 'socks', 'http'):
+        if inbound.get('protocol') not in NODE_PROTOCOLS:
             continue
         tag = inbound.get('tag', '')
         rules = [r for r in config.get('routing', {}).get('rules', []) if tag in r.get('inboundTag', [])]
@@ -103,8 +170,14 @@ def topology(instance):
                       'protocol': inbound['protocol'], 'transport': network, 'tls': stream.get('security') in ('tls', 'reality') or bool(instance.get('external_tls') and network == 'ws'),
                       'port': instance.get('external_port') if network == 'ws' and instance.get('external_port') else inbound.get('port'),
                       'outbound': outbound, 'probe': outbounds.get(outbound, ''),
-                      '_emails': [u['email'] for u in users if u.get('email')]})
+                      '_emails': [u['email'] for u in users if u.get('email')],
+                      '_levels': {u['email']: u.get('level', 0) for u in users if u.get('email') and isinstance(u.get('level', 0), int)}})
     return nodes, credentials
+
+
+def outbound_list(instance):
+    config = json.loads(Path(instance['config_path']).read_text())
+    return [{'tag': o['tag'], 'protocol': o.get('protocol', '')} for o in config.get('outbounds', []) if o.get('tag')]
 
 
 class Ledger:
@@ -123,17 +196,25 @@ class Ledger:
 CREATE TABLE IF NOT EXISTS counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
 CREATE TABLE IF NOT EXISTS daily(day TEXT,instance TEXT,tag TEXT,up INTEGER,down INTEGER,PRIMARY KEY(day,instance,tag));
 CREATE TABLE IF NOT EXISTS minute(ts INTEGER,instance TEXT,up INTEGER,down INTEGER,PRIMARY KEY(ts,instance));
+CREATE TABLE IF NOT EXISTS user_counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
+CREATE TABLE IF NOT EXISTS user_daily(day TEXT,instance TEXT,tag TEXT,up INTEGER,down INTEGER,PRIMARY KEY(day,instance,tag));
+CREATE TABLE IF NOT EXISTS out_counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
+CREATE TABLE IF NOT EXISTS out_daily(day TEXT,instance TEXT,tag TEXT,up INTEGER,down INTEGER,PRIMARY KEY(day,instance,tag));
 CREATE TABLE IF NOT EXISTS probes(instance TEXT,tag TEXT,at INTEGER,result TEXT,PRIMARY KEY(instance,tag));
 CREATE TABLE IF NOT EXISTS probe_history(instance TEXT,tag TEXT,at INTEGER,result TEXT,PRIMARY KEY(instance,tag,at));
 CREATE INDEX IF NOT EXISTS xray_probe_history_time ON probe_history(at);
 ''')
 
-    def ingest(self, instance, gen, counters, now, day):
+    # kind -> (baseline table, daily table); only inbound bytes feed the per-instance minute series.
+    KINDS = {'inbound': ('counters', 'daily'), 'user': ('user_counters', 'user_daily'), 'outbound': ('out_counters', 'out_daily')}
+
+    def ingest(self, instance, gen, counters, now, day, kind='inbound'):
+        counters_table, daily_table = self.KINDS[kind]
         result = {}
         with self.lock, self.db:
             for tag, values in counters.items():
                 up, down = values
-                old = self.db.execute('SELECT * FROM counters WHERE instance=? AND tag=?', (instance, tag)).fetchone()
+                old = self.db.execute('SELECT * FROM %s WHERE instance=? AND tag=?' % counters_table, (instance, tag)).fetchone()
                 du = dd = 0
                 rate_up = rate_down = None
                 if old:
@@ -146,10 +227,11 @@ CREATE INDEX IF NOT EXISTS xray_probe_history_time ON probe_history(at);
                 total_up = (old['total_up'] if old else 0) + du
                 total_down = (old['total_down'] if old else 0) + dd
                 first = old['first'] if old else now
-                self.db.execute('INSERT OR REPLACE INTO counters VALUES(?,?,?,?,?,?,?,?,?)', (instance, tag, gen, up, down, total_up, total_down, first, now))
-                self.db.execute('INSERT INTO daily VALUES(?,?,?,?,?) ON CONFLICT(day,instance,tag) DO UPDATE SET up=up+excluded.up,down=down+excluded.down', (day, instance, tag, du, dd))
-                self.db.execute('INSERT INTO minute VALUES(?,?,?,?) ON CONFLICT(ts,instance) DO UPDATE SET up=up+excluded.up,down=down+excluded.down', (now // 60 * 60, instance, du, dd))
-                today = self.db.execute('SELECT up,down FROM daily WHERE day=? AND instance=? AND tag=?', (day, instance, tag)).fetchone()
+                self.db.execute('INSERT OR REPLACE INTO %s VALUES(?,?,?,?,?,?,?,?,?)' % counters_table, (instance, tag, gen, up, down, total_up, total_down, first, now))
+                self.db.execute('INSERT INTO %s VALUES(?,?,?,?,?) ON CONFLICT(day,instance,tag) DO UPDATE SET up=up+excluded.up,down=down+excluded.down' % daily_table, (day, instance, tag, du, dd))
+                if kind == 'inbound':
+                    self.db.execute('INSERT INTO minute VALUES(?,?,?,?) ON CONFLICT(ts,instance) DO UPDATE SET up=up+excluded.up,down=down+excluded.down', (now // 60 * 60, instance, du, dd))
+                today = self.db.execute('SELECT up,down FROM %s WHERE day=? AND instance=? AND tag=?' % daily_table, (day, instance, tag)).fetchone()
                 result[tag] = {'upload': total_up, 'download': total_down, 'today_upload': today['up'], 'today_download': today['down'],
                                'up_rate': rate_up, 'down_rate': rate_down, 'since': first, 'sampled_at': now, 'counter_reset': bool(old and reset)}
             self.db.execute('DELETE FROM minute WHERE ts<?', (now - 31 * 86400,))
@@ -197,14 +279,20 @@ CREATE INDEX IF NOT EXISTS xray_probe_history_time ON probe_history(at);
                 output[pair['instance'] + ':' + pair['tag']] = states
         return output
 
+    def user_day_totals(self, day):
+        with self.lock:
+            return [dict(r) for r in self.db.execute('SELECT instance,tag email,up+down total FROM user_daily WHERE day=?', (day,))]
+
     def details(self, since, first_day, step=60):
         with self.lock:
             daily = [dict(r) for r in self.db.execute('SELECT day,instance,tag,up upload,down download FROM daily WHERE day>=? ORDER BY day DESC,instance,tag', (first_day,))]
+            user_daily = [dict(r) for r in self.db.execute('SELECT day,instance,tag email,up upload,down download FROM user_daily WHERE day>=? ORDER BY day DESC,instance,tag', (first_day,))]
+            out_daily = [dict(r) for r in self.db.execute('SELECT day,instance,tag,up upload,down download FROM out_daily WHERE day>=? ORDER BY day DESC,instance,tag', (first_day,))]
             minutes = [dict(r) for r in self.db.execute('SELECT (ts/?)*? ts,instance,SUM(up) upload,SUM(down) download FROM minute WHERE ts>=? GROUP BY 1,2 ORDER BY 1', (step, step, since))]
             probes = [dict(r) for r in self.db.execute('SELECT instance,tag,at,result FROM probe_history WHERE at>=? ORDER BY at DESC LIMIT 1501', (since,))]
         truncated = len(probes) > 1500
         probes = [{k: v for k, v in row.items() if k != 'result'} | json.loads(row['result']) for row in probes[:1500]]
-        return {'daily': daily, 'minutes': minutes, 'sample_step': step, 'probe_history': probes, 'probe_history_truncated': truncated}
+        return {'daily': daily, 'user_daily': user_daily, 'outbound_daily': out_daily, 'minutes': minutes, 'sample_step': step, 'probe_history': probes, 'probe_history_truncated': truncated}
 
 
 class Monitor:
@@ -220,7 +308,7 @@ class Monitor:
         self.generation_fn = generation_fn
         self.lock = threading.RLock()
         self.probe_lock = threading.Lock()
-        self.states, self.rows = {}, {}
+        self.states, self.rows, self.user_rows, self.out_rows, self.runtimes = {}, {}, {}, {}, {}
         self.last_probe = 0
         self.probe_running = False
         self.probe_error = ''
@@ -235,38 +323,93 @@ class Monitor:
                 client = self.clients[key]
                 raw = client.counters()
                 observed = {}
-                online = {}
                 for node in nodes:
-                    tag = node['tag']
-                    names = ['inbound>>>' + tag + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
+                    names = ['inbound>>>' + node['tag'] + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
                     if not all(name in raw for name in names):
                         raise RuntimeError('Inbound statistics not enabled')
-                    observed[tag] = tuple(raw[name] for name in names)
-                    sources, supported = {}, bool(node['_emails'])
+                    observed[node['tag']] = tuple(raw[name] for name in names)
+                levels, members = {}, {}
+                for node in nodes:
                     for email in node['_emails']:
-                        ips = client.online(email)
-                        if ips is None:
-                            supported = False
-                        else:
-                            for ip, last in ips.items():
-                                try:
-                                    ipaddress.ip_address(ip)
-                                    sources[ip] = max(sources.get(ip, 0), last)
-                                except ValueError:
-                                    pass
-                    online[tag] = {'online_sources': sorted(sources) if supported else None}
+                        levels.setdefault(email, node['_levels'].get(email, 0))
+                        members.setdefault(email, []).append(node['key'])
+                ips = self._online(i, client, levels)
+                users = {}
+                for email in levels:
+                    names = ['user>>>' + email + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
+                    if all(name in raw for name in names):
+                        users[email] = tuple(raw[name] for name in names)
+                outbound = {}
+                for out in outbound_list(i):
+                    names = ['outbound>>>' + out['tag'] + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
+                    if all(name in raw for name in names):
+                        outbound[out['tag']] = (out['protocol'], tuple(raw[name] for name in names))
+                try:
+                    runtime = client.runtime()
+                except grpc.RpcError:
+                    runtime = None
                 if gen != self.generation_fn(i):
                     raise RuntimeError('Xray restarted during sample')
                 now = int(time.time())
-                values = self.ledger.ingest(key, gen, observed, now, self.day(now))
-                public = [{k: v for k, v in n.items() if not k.startswith('_')} | values[n['tag']] | online[n['tag']] for n in nodes]
+                day = self.day(now)
+                values = self.ledger.ingest(key, gen, observed, now, day)
+                user_values = self.ledger.ingest(key, gen, users, now, day, 'user')
+                out_values = self.ledger.ingest(key, gen, {t: v for t, (_, v) in outbound.items()}, now, day, 'outbound')
+                public = []
+                for n in nodes:
+                    sources, supported = {}, bool(n['_emails'])
+                    for email in n['_emails']:
+                        if ips[email] is None:
+                            supported = False
+                        else:
+                            for ip, last in ips[email].items():
+                                sources[ip] = max(sources.get(ip, 0), last)
+                    public.append({k: v for k, v in n.items() if not k.startswith('_')} | values[n['tag']] |
+                                  {'online_sources': sorted(sources) if supported else None})
+                user_rows = [{'key': key + ':' + email, 'instance': key, 'email': email, 'nodes': members[email],
+                              'online_ips': sorted(ips[email]) if ips[email] is not None else None} |
+                             (user_values.get(email) or {'upload': None, 'download': None, 'today_upload': None, 'today_download': None,
+                                                         'up_rate': None, 'down_rate': None, 'since': None, 'sampled_at': now})
+                             for email in levels]
+                out_rows = [{'key': key + ':' + tag, 'instance': key, 'tag': tag, 'protocol': proto} | out_values[tag]
+                            for tag, (proto, _) in outbound.items()]
                 with self.lock:
                     self.rows[key] = public
-                    self.states[key] = {'id': key, 'label': i.get('label', key), 'connected': True, 'last_success': now, 'error': ''}
+                    self.user_rows[key] = user_rows
+                    self.out_rows[key] = out_rows
+                    self.runtimes[key] = runtime
+                    self.states[key] = {'id': key, 'label': i.get('label', key), 'connected': True, 'last_success': now, 'error': '',
+                                        'users_api': getattr(client, 'users_api', None), 'user_stats': bool(users) or not levels, 'outbound_stats': bool(outbound)}
             except Exception as exc:
                 with self.lock:
                     previous = self.states.get(key, {})
                     self.states[key] = {'id': key, 'label': i.get('label', key), 'connected': False, 'last_success': previous.get('last_success', 0), 'error': type(exc).__name__}
+
+    @staticmethod
+    def _online(instance, client, levels):
+        """{email: {ip: last_seen} | None}; None means the core does not track that user's online addresses."""
+        if not levels:
+            return {}
+        bulk = client.online_users()
+        tracked = online_levels(instance) if bulk is not None else set()
+        result = {}
+        for email, level in levels.items():
+            if bulk is None:
+                found = client.online(email)
+            else:
+                # GetUsersStats lists only users with addresses; an absent tracked user has none online.
+                found = bulk.get(email, {} if level in tracked else None)
+            if found is not None:
+                valid = {}
+                for ip, last in found.items():
+                    try:
+                        ipaddress.ip_address(ip)
+                        valid[ip] = last
+                    except ValueError:
+                        pass
+                found = valid
+            result[email] = found
+        return result
 
     def snapshot(self, detail=True):
         with self.lock:
@@ -275,20 +418,30 @@ class Monitor:
             for state in states:
                 state['connected'] = state['id'] in connected
             nodes = [dict(row) | {'fresh': key in connected} for key, rows in self.rows.items() for row in rows]
+            users = [dict(row) | {'fresh': key in connected} for key, rows in self.user_rows.items() for row in rows]
+            outbounds = [dict(row) | {'fresh': key in connected} for key, rows in self.out_rows.items() for row in rows]
+            runtimes = {key: value for key, value in self.runtimes.items() if key in connected}
             samples = list(self.samples)
         for n in nodes:
             n['label'] = (self.settings.get('labels.xray') or {}).get(n['key']) or n['label']
             if not n['fresh']:
                 n.update(up_rate=None, down_rate=None, online_sources=None)
+        for row in users + outbounds:
+            if not row['fresh']:
+                row.update(up_rate=None, down_rate=None)
+                if 'online_ips' in row:
+                    row['online_ips'] = None
         totals = {key: sum(n[key] for n in nodes) for key in ('upload', 'download', 'today_upload', 'today_download')}
         ready = bool(nodes) and all(n['fresh'] and n['up_rate'] is not None and n['down_rate'] is not None for n in nodes)
         totals.update(rates_ready=ready, up_rate=sum(n['up_rate'] for n in nodes) if ready else None,
-                      down_rate=sum(n['down_rate'] for n in nodes) if ready else None)
-        return {'enabled': bool(self.instances), 'instances': states, 'nodes': nodes, 'totals': totals,
+                      down_rate=sum(n['down_rate'] for n in nodes) if ready else None,
+                      online_users=sum(1 for u in users if u['online_ips']) if any(u['online_ips'] is not None for u in users) else None)
+        return {'enabled': bool(self.instances), 'instances': states, 'nodes': nodes, 'users': users, 'outbound_stats': outbounds,
+                'runtimes': runtimes, 'totals': totals,
                 'series': self.ledger.series(int(time.time())) if self.ledger and detail else [], 'realtime': samples,
                 'probes': self.ledger.probes() if self.ledger else {}, 'probe_running': self.probe_running, 'probe_error': self.probe_error,
-                'scope': 'Xray 入站原生计数；自首次接入采样起，未回填历史。在线来源按核心口径，经过 CDN/Nginx 时可能为边缘或回环，不能冒充真实客户端 IP。',
-                'limitations': 'Xray 不提供 sing-box 式逐连接字节与关闭单连接接口；现有封禁页也只覆盖 sing-box，未接管 Xray WebSocket 入口。跨日采样中断期间的增量计入恢复日。'}
+                'scope': 'Xray 入站原生计数；自首次接入采样起，未回填历史。用户流量按 email 计数，同一用户在多个入站共用一份计数。在线来源按核心口径，经过 CDN/Nginx 时可能为边缘或回环，不能冒充真实客户端 IP。',
+                'limitations': 'Xray 不提供逐连接字节、目标域名和关闭单连接接口；用户流量不分配到任何 IP。跨日采样中断期间的增量计入恢复日。'}
 
     def probe_async(self):
         if not self.instances or not self.probe_lock.acquire(blocking=False):

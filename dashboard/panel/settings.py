@@ -34,7 +34,8 @@ DEFAULTS = {
         'binary': '/usr/local/bin/sing-box',
         'subscribe_interval_ms': 1000,
     },
-    'xray': {'instances': [], 'poll_seconds': 2},
+    # access_control: also ban on the public ports of Xray inbounds (needs firewall privileges; see docs/xray.md).
+    'xray': {'instances': [], 'poll_seconds': 2, 'access_control': False},
     'gate': {
         # Enabled once the CDN origin header is verified; see docs/dashboard.md.
         'enabled': False,
@@ -82,6 +83,8 @@ DEFAULTS = {
         'disk_percent': 85,
         # 0 disables the per-IP daily traffic alert.
         'ip_daily_bytes': 0,
+        # 0 disables the per-user (Xray email) daily traffic alert.
+        'xray_user_daily_bytes': 0,
         'services': ['sing-box.service', 'nginx.service'],
     },
     'network': {
@@ -111,7 +114,7 @@ DEFAULTS = {
 # Values the panel UI may change at runtime (stored in the database, not the file).
 EDITABLE = {
     'labels.inbounds', 'labels.outbounds', 'labels.xray', 'entries',
-    'alerts.ip_daily_bytes', 'alerts.cert_days', 'alerts.disk_percent',
+    'alerts.ip_daily_bytes', 'alerts.xray_user_daily_bytes', 'alerts.cert_days', 'alerts.disk_percent',
     'alerts.collector_down_seconds', 'alerts.probe_failures',
     'reachability.enabled', 'reachability.interval_seconds', 'reachability.failures',
     'probes.interval_seconds', 'probes.enabled',
@@ -255,6 +258,8 @@ def validate(values, secrets):
         raise ValueError('singbox.enabled must be a boolean')
     if not enabled and not get_path(values, 'xray.instances'):
         raise ValueError('At least one monitoring engine must be configured')
+    if not isinstance(get_path(values, 'xray.access_control', False), bool):
+        raise ValueError('xray.access_control must be a boolean')
     required = ('username', 'salt', 'password_hash') + (('api_secret',) if enabled else ())
     missing = [k for k in required if not secrets.get(k)]
     if missing:

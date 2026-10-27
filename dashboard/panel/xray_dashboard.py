@@ -33,6 +33,16 @@ def present(ctx):
                 else:
                     out[key] += node[key]
             out['fresh'] = out['fresh'] and node['fresh']
+    measured = {o['key']: o for o in data['outbound_stats']}
+    for out in outbounds.values():
+        # Real outbound counters when the core records them; summed inbound bytes stay as the fallback.
+        real = measured.get(out['key'])
+        out['measured'] = bool(real)
+        if real:
+            out.update({k: real[k] for k in ('upload', 'download', 'up_rate', 'down_rate', 'today_upload', 'today_download')})
+    for user in data['users']:
+        user['total'] = None if user['upload'] is None else user['upload'] + user['download']
+        user['today'] = None if user['today_upload'] is None else user['today_upload'] + user['today_download']
     for entry in sources.values():
         geo = ctx.geo.lookup(entry['ip'])
         entry['geo'] = {k: geo[k] for k in GEO_KEYS}
@@ -50,7 +60,9 @@ def present(ctx):
                 probe_targets=[t['name'] for t in ctx.settings.get('probes.targets') or [] if t['name'] != 'trace'], probes_enabled=bool(ctx.settings.get('probes.enabled')),
                 capabilities={'node_bytes': True, 'node_rates': True, 'daily_bytes': True, 'connection_count': False,
                               'per_connection_bytes': False, 'client_bytes': False, 'destination_history': False,
-                              'close_connection': False, 'access_control': False})
+                              'user_bytes': any(u['upload'] is not None for u in data['users']),
+                              'outbound_bytes': bool(data['outbound_stats']),
+                              'close_connection': False, 'access_control': ctx.bans_enabled and bool(ctx.settings.get('xray.access_control'))})
     return data
 
 
@@ -59,9 +71,9 @@ def details(ctx, span):
     now = int(time.time())
     step = 60 if seconds <= 86400 else 3600
     result = ctx.xray.ledger.details(now - seconds, ctx.store.day(now - seconds), step) if ctx.xray.ledger else {
-        'daily': [], 'minutes': [], 'sample_step': step, 'probe_history': [], 'probe_history_truncated': False}
+        'daily': [], 'user_daily': [], 'outbound_daily': [], 'minutes': [], 'sample_step': step, 'probe_history': [], 'probe_history_truncated': False}
     result.update(engine='xray', range=span, since=now - seconds,
-                  history_scope='每分钟按实例记录流量；逐连接、目标域名和客户端字节未由 Xray 提供。探测历史从本版开始保存，最多保留 7 天。')
+                  history_scope='每分钟按实例记录入站流量，用户与出站按自然日累计；逐连接、目标域名和单个 IP 的字节未由 Xray 提供。探测历史最多保留 7 天。')
     return result
 
 

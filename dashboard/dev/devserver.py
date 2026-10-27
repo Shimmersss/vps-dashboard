@@ -1,6 +1,9 @@
 """Local preview with synthetic data; never touches a real server or sing-box.
 
-    python dev/devserver.py [--port 8790] [--geo-dir DIR]
+    python dev/devserver.py [--port 8790] [--geo-dir DIR] [--xray /path/to/xray]
+
+--xray also previews the Xray pages with a real local core: two VLESS users chained on loopback,
+with background traffic, so counters, users and outbound bytes are native (not synthesised).
 
 Login: dev / dev-password. Data lives in a temporary directory removed on exit.
 """
@@ -10,7 +13,10 @@ import hashlib
 import json
 import os
 import random
+import http.server
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -167,10 +173,62 @@ def simulate(ctx, rng):
         time.sleep(1)
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+def start_xray(root, binary):
+    """Run a loopback-only Xray: socks local-<user> -> VLESS chain-<user> -> VLESS node -> freedom."""
+    api, node, users = free_port(), free_port(), ['alice@dev.invalid', 'bob@dev.invalid']
+    ids = {u: '00000000-0000-4000-8000-%012d' % (i + 1) for i, u in enumerate(users)}
+    socks = {u: free_port() for u in users}
+    config = {'log': {'loglevel': 'none'},
+              'inbounds': [{'tag': 'node', 'protocol': 'vless', 'listen': '127.0.0.1', 'port': node,
+                            'settings': {'decryption': 'none', 'clients': [{'id': ids[u], 'email': u} for u in users]}}] +
+                          [{'tag': 'local-' + u.split('@')[0], 'protocol': 'socks', 'listen': '127.0.0.1', 'port': socks[u], 'settings': {'auth': 'noauth'}} for u in users],
+              'outbounds': [{'tag': 'direct', 'protocol': 'freedom', 'settings': {'finalRules': [{'action': 'allow', 'ip': ['127.0.0.1/32']}]}}] +
+                           [{'tag': 'chain-' + u.split('@')[0], 'protocol': 'vless', 'settings': {'vnext': [{'address': '127.0.0.1', 'port': node, 'users': [{'id': ids[u], 'encryption': 'none'}]}]}} for u in users],
+              'routing': {'rules': [{'type': 'field', 'inboundTag': ['node'], 'outboundTag': 'direct'}] +
+                                   [{'type': 'field', 'inboundTag': ['local-' + u.split('@')[0]], 'outboundTag': 'chain-' + u.split('@')[0]} for u in users]}}
+    overlay = {'stats': {}, 'api': {'tag': 'dev-stats', 'listen': '127.0.0.1:%d' % api, 'services': ['StatsService']},
+               'policy': {'system': {k: True for k in ('statsInboundUplink', 'statsInboundDownlink', 'statsOutboundUplink', 'statsOutboundDownlink')},
+                          'levels': {'0': {'statsUserUplink': True, 'statsUserDownlink': True, 'statsUserOnline': True}}}}
+    (root / 'xray.json').write_text(json.dumps(config))
+    (root / 'xray-stats.json').write_text(json.dumps(overlay))
+    proc = subprocess.Popen([binary, 'run', '-config', str(root / 'xray.json'), '-config', str(root / 'xray-stats.json')],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    atexit.register(proc.terminate)
+    instance = {'id': 'dev', 'label': '本地 Xray', 'service': 'xray-dev.service', 'config_path': str(root / 'xray.json'),
+                'api_address': '127.0.0.1:%d' % api, 'stats_overlay': str(root / 'xray-stats.json'),
+                'node_labels': {'node': 'VLESS 主入口'}}
+    return instance, list(socks.values())
+
+
+def xray_traffic(ports):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = os.urandom(random.randint(20, 400) * 1024)
+            self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    while True:
+        for weight, port in zip((1, 3), ports):
+            for _ in range(weight):
+                subprocess.run(['curl', '-s', '-o', '/dev/null', '--max-time', '5', '--proxy', 'socks5h://127.0.0.1:%d' % port,
+                                'http://127.0.0.1:%d/' % server.server_port], check=False)
+        time.sleep(2)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8790)
     parser.add_argument('--geo-dir', default=os.environ.get('JOYSOL_DEV_GEO', ''))
+    parser.add_argument('--xray', default=os.environ.get('JOYSOL_DEV_XRAY', ''), help='local Xray binary for the Xray preview')
     args = parser.parse_args()
     root = Path(tempfile.mkdtemp(prefix='joysol-dev-'))
     atexit.register(shutil.rmtree, root, True)
@@ -190,6 +248,10 @@ def main():
     }
     if args.geo_dir:
         values['paths']['geo_dir'] = args.geo_dir
+    xray_ports = []
+    if args.xray:
+        instance, xray_ports = start_xray(root, args.xray)
+        values['xray'] = {'instances': [instance]}
     proc = root / 'proc'
     proc.mkdir()
     (proc / 'route').write_text('Iface\tDestination\neth0\t00000000\n')
@@ -208,6 +270,11 @@ def main():
     ctx.quality.upstreams = lambda: UPSTREAMS
     for target in (lambda: simulate(ctx, rng), lambda: fake_nic(ctx, proc), ctx._ticker, ctx._maintenance):
         threading.Thread(target=target, daemon=True).start()
+    if xray_ports:
+        # No systemd here: one process generation for the preview core.
+        ctx.xray.generation_fn = lambda instance: 'dev'
+        threading.Thread(target=ctx.xray.run, daemon=True).start()
+        threading.Thread(target=xray_traffic, args=(xray_ports,), daemon=True).start()
     print('Preview: http://localhost:%d/monitor/  (dev / dev-password)' % args.port, flush=True)
     app.run(host='127.0.0.1', port=args.port, threaded=True, use_reloader=False)
 

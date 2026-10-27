@@ -51,6 +51,8 @@ CHECK_ONLY = '--check-only' in sys.argv
 SINGBOX = (profile.get('settings', {}).get('singbox') or {}).get('enabled', True) is not False
 XRAY = (profile.get('settings', {}).get('xray') or {}).get('instances') or []
 MODE = {(True, False): 'sing-box', (False, True): 'Xray', (True, True): 'sing-box + Xray'}.get((SINGBOX, bool(XRAY)))
+# Bans (iptables) run with sing-box, or for Xray public ports when settings.xray.access_control is true.
+FIREWALL = SINGBOX or bool(XRAY and (profile.get('settings', {}).get('xray') or {}).get('access_control') is True)
 DEPS = 'import flask, gunicorn, grpc, google.protobuf'
 
 
@@ -141,10 +143,10 @@ def render_nginx(text, gate, gate_header, ws_ports):
 
 def unit_file():
     after = ' '.join(([R['singbox_service']] if SINGBOX else []) + [i['service'] for i in XRAY])
-    if SINGBOX:
+    if FIREWALL:
         # The xtables lock lives on tmpfs: recreate it before start so a reboot never blocks the panel.
         firewall = ('ExecStartPre=+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/joysol-dashboard.conf\n', ' -/run/xtables.lock',
-                    '# NET_ADMIN/NET_RAW: sing-box bans (iptables). DAC_READ_SEARCH: read core configs for topology and probes; read-only.\n'
+                    '# NET_ADMIN/NET_RAW: node port bans (iptables). DAC_READ_SEARCH: read core configs for topology and probes; read-only.\n'
                     'CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH')
     else:
         firewall = ('', '', '# Xray only: read-only statistics, no firewall privileges. DAC_READ_SEARCH: read the Xray config.\n'
@@ -275,7 +277,7 @@ def main():
             singbox_changes = json.dumps(sb_new, sort_keys=True) != json.dumps(sb, sort_keys=True)
             log('sing-box 配置%s' % ('需要更新 API 服务（将重启 sing-box，会短暂断线）' if singbox_changes else '无需改动（不重启代理）'))
         if XRAY:
-            log('Xray %d 个实例只读接入，不修改、不重启 Xray' % len(XRAY))
+            log('Xray %d 个实例只读接入，不修改、不重启 Xray%s' % (len(XRAY), '；访问控制作用于 Xray 公网端口（iptables）' if FIREWALL and not SINGBOX else ''))
         if CHECK_ONLY:
             log('--check-only：未做任何修改')
             return
@@ -365,7 +367,7 @@ def main():
         run('install -d -m 700 %s' % q(R['config_dir']))
         write(posixpath.join(R['config_dir'], 'config.json'), json.dumps(secrets_cfg))
         write(posixpath.join(R['config_dir'], 'settings.json'), json.dumps(settings, ensure_ascii=False, indent=2))
-        if SINGBOX:
+        if FIREWALL:
             write('/etc/tmpfiles.d/joysol-dashboard.conf', 'f /run/xtables.lock 0600 root root -\n', 0o644)
         write(unit_path, unit_file(), 0o644)
         if singbox_changes:
@@ -382,7 +384,7 @@ def main():
         switched = True
         log('切换到新版本（仅重启面板服务）')
         run('set -e; %sln -sfn %s %s/current.new && mv -T %s/current.new %s/current; systemctl daemon-reload; '
-            'systemctl enable %s >/dev/null 2>&1; systemctl restart %s' % ('touch /run/xtables.lock; ' if SINGBOX else '', q(RELEASE), q(inst), q(inst), q(inst), q(R['service']), q(R['service'])))
+            'systemctl enable %s >/dev/null 2>&1; systemctl restart %s' % ('touch /run/xtables.lock; ' if FIREWALL else '', q(RELEASE), q(inst), q(inst), q(inst), q(R['service']), q(R['service'])))
         if singbox_changes:
             run('cp %s %s && systemctl restart %s' % (q(R['singbox_config'] + '.dashboard-candidate'), q(R['singbox_config']), q(R['singbox_service'])))
         health = None

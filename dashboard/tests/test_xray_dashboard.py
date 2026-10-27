@@ -91,6 +91,27 @@ class DashboardTest(unittest.TestCase):
         self.assertIsNone(x['nodes'][0]['down_rate'])
         self.assertFalse(x['instances'][0]['connected'])
 
+    def test_users_measured_outbounds_and_user_quota_alert(self):
+        day = self.ctx.store.day()
+        self.ctx.xray.ledger.ingest('main', 'g', {'a@x': (0, 0)}, self.now - 4, day, 'user')
+        user = self.ctx.xray.ledger.ingest('main', 'g', {'a@x': (300, 700)}, self.now - 2, day, 'user')['a@x']
+        self.ctx.xray.user_rows['main'] = [{'key': 'main:a@x', 'instance': 'main', 'email': 'a@x', 'nodes': ['main:in-a'], 'online_ips': ['198.51.100.7']} | user]
+        self.ctx.xray.ledger.ingest('main', 'g', {'out-a': (0, 0)}, self.now - 4, day, 'outbound')
+        out = self.ctx.xray.ledger.ingest('main', 'g', {'out-a': (11, 22)}, self.now - 2, day, 'outbound')['out-a']
+        self.ctx.xray.out_rows['main'] = [{'key': 'main:out-a', 'instance': 'main', 'tag': 'out-a', 'protocol': 'socks'} | out]
+        x = self.client.get('/monitor/api/xray').get_json()
+        self.assertEqual((x['users'][0]['total'], x['users'][0]['today']), (1000, 1000))
+        self.assertTrue(x['capabilities']['user_bytes'] and x['capabilities']['outbound_bytes'])
+        self.assertFalse(x['capabilities']['access_control'])
+        self.assertEqual((x['outbounds'][0]['download'], x['outbounds'][0]['measured']), (22, True))
+        self.assertEqual(x['totals']['online_users'], 1)
+        detail = self.client.get('/monitor/api/xray/details').get_json()
+        self.assertEqual(detail['user_daily'][0]['download'], 700)
+        self.ctx.settings.apply_overrides({'alerts.xray_user_daily_bytes': 999})
+        self.ctx.alerts._xray_quota(found := {})
+        self.assertEqual([v[0] for v in found.values()], ['quota'])
+        self.assertTrue(all(k.startswith('xray:quota:') and 'a@x' not in k for k in found))
+
 
 if __name__ == '__main__':
     unittest.main()

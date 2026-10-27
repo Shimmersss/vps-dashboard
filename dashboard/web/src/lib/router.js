@@ -8,7 +8,7 @@ export const ROUTES = [
   { name: 'topology', title: '链路拓扑', group: '监控', icon: 'topology' },
   { name: 'map', title: '地理分布', xrayTitle: '出口分布', group: '监控', icon: 'map' },
   { name: 'network', title: '网络质量', xrayTitle: '网络状态', group: '监控', icon: 'network' },
-  { name: 'clients', title: '客户端', xrayTitle: '在线来源', group: '数据', icon: 'clients' },
+  { name: 'clients', title: '客户端', xrayTitle: '用户与来源', group: '数据', icon: 'clients' },
   { name: 'history', title: '连接历史', xrayTitle: '流量记录', group: '数据', icon: 'history' },
   { name: 'daily', title: '每日流量', group: '数据', icon: 'daily' },
   { name: 'exits', title: '出口节点', group: '管理', icon: 'exits' },

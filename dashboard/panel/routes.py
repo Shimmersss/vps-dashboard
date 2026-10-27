@@ -87,8 +87,10 @@ def register(app, ctx):
                 return error('请求验证失败', 403)
             if request.headers.get('Origin') != s.public_origin:
                 return error('来源验证失败', 403)
-        if not ctx.singbox_enabled and rel in ('/api/ban', '/api/connections/close', '/api/probes/run', '/api/stream'):
-            return error('sing-box 未启用；Xray 当前提供只读节点监控', 409)
+        if not ctx.bans_enabled and rel == '/api/ban':
+            return error('访问控制未启用；Xray 需在站点配置中设置 xray.access_control=true 后重新部署', 409)
+        if not ctx.singbox_enabled and rel in ('/api/connections/close', '/api/probes/run', '/api/stream'):
+            return error('sing-box 未启用；Xray 不提供关闭单连接与实时连接流', 409)
         return None
 
     # -- CDN origin gate (Nginx auth_request) ----------------------------------------------
@@ -180,7 +182,8 @@ def register(app, ctx):
             topology={'inbounds': topo['inbounds'], 'outbounds': topo['outbounds'], 'final': topo['final']},
             alerts=len([a for a in ctx.alerts.open_alerts() if not a['acked']]),
             alerts_xray=len([a for a in xray_dashboard.alerts_for_xray(ctx, ctx.alerts.open_alerts()) if not a['acked']]),
-            features={'probes': ctx.singbox_enabled and bool(s.get('probes.enabled')), 'stream': ctx.singbox_enabled}, xray=ctx.xray.snapshot(detail=False),
+            features={'probes': ctx.singbox_enabled and bool(s.get('probes.enabled')), 'stream': ctx.singbox_enabled,
+                      'bans': ctx.bans_enabled, 'xray_bans': ctx.xray_bans}, xray=ctx.xray.snapshot(detail=False),
             primary_engine='xray' if ctx.xray.instances else 'singbox', singbox_enabled=ctx.singbox_enabled,
         )
 
@@ -459,8 +462,9 @@ def register(app, ctx):
             singbox={'version': system.singbox_version(s.get('singbox.binary')), 'config': s.get('singbox.config_path'),
                      'api': s.get('singbox.api_address'), 'error': ctx.topology.error},
             geo=ctx.geo.info(), health=_health(ctx), streams=ctx.hub.count(),
-            firewall={'chain': s.get('firewall.chain'), 'ports': ctx.topology.public_ports(),
-                      'endpoints': [{'proto': proto, 'port': port} for proto, port in ctx.topology.public_endpoints()]},
+            firewall={'chain': s.get('firewall.chain'), 'ports': sorted({port for _, port in ctx.public_endpoints()}),
+                      'endpoints': [{'proto': proto, 'port': port} for proto, port in ctx.public_endpoints()],
+                      'enabled': ctx.bans_enabled, 'xray': ctx.xray_bans},
             settings=s.public_view(), gate={'enabled': s.gate_enabled}, xray=ctx.xray.snapshot(detail=False),
             xray_runtimes=system.xray_runtimes(ctx.xray.instances))
 
