@@ -180,7 +180,7 @@ def register(app, ctx):
             gate={'enabled': s.gate_enabled, 'origin_verified': _origin_verified(s)},
             live={k: frame[k] for k in ('up', 'down', 'active', 'online_ips')},
             topology={'inbounds': topo['inbounds'], 'outbounds': topo['outbounds'], 'final': topo['final']},
-            alerts=len([a for a in ctx.alerts.open_alerts() if not a['acked']]),
+            alerts=len([a for a in ctx.alerts.for_engine(ctx.alerts.open_alerts(), 'singbox') if not a['acked']]),
             alerts_xray=len([a for a in xray_dashboard.alerts_for_xray(ctx, ctx.alerts.open_alerts()) if not a['acked']]),
             features={'probes': ctx.singbox_enabled and bool(s.get('probes.enabled')), 'stream': ctx.singbox_enabled,
                       'bans': ctx.bans_enabled, 'xray_bans': ctx.xray_bans}, xray=ctx.xray.snapshot(detail=False),
@@ -404,21 +404,32 @@ def register(app, ctx):
     @bp.route('/api/alerts')
     def alerts():
         opened, recent = ctx.alerts.open_alerts(), ctx.alerts.recent(100)
-        if request.args.get('engine') == 'xray':
-            opened, recent = xray_dashboard.alerts_for_xray(ctx, opened), xray_dashboard.alerts_for_xray(ctx, recent)
+        engine = request.args.get('engine')
+        if engine not in (None, 'xray', 'singbox'):
+            return error('未知监控来源', 400)
+        opened, recent = ctx.alerts.for_engine(opened, engine), ctx.alerts.for_engine(recent, engine)
         return jsonify(open=opened, recent=recent, reachability=ctx.reachability.snapshot())
 
     @bp.route('/api/alerts/ack', methods=['POST'])
     def alerts_ack():
         body = request.get_json(silent=True) or {}
-        ctx.alerts.ack(body.get('id'))
+        engine = body.get('engine')
+        if engine not in (None, 'xray', 'singbox'):
+            return error('未知监控来源', 400)
+        try:
+            ok = ctx.alerts.ack(body.get('id'), engine)
+        except (ValueError, TypeError):
+            return error('告警编号无效', 400)
+        if not ok:
+            return error('当前监控来源中未找到该告警', 404)
         return jsonify(ok=True)
 
     @bp.route('/api/probes')
     def probes():
         return jsonify(latest=ctx.prober.latest(), history=ctx.prober.history(as_int('hours', 24, 1, 720)),
                        changes={o['tag']: ctx.prober.exit_changes(o['tag']) for o in ctx.topology.describe()['outbounds'] if o['probe']},
-                       interval=s.get('probes.interval_seconds'), enabled=bool(s.get('probes.enabled')), running=ctx.prober.running)
+                       interval=s.get('probes.interval_seconds'), enabled=bool(s.get('probes.enabled')), running=ctx.prober.running,
+                       error=ctx.prober.error)
 
     @bp.route('/api/probes/run', methods=['POST'])
     def probes_run():

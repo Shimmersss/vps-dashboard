@@ -9,6 +9,7 @@ import ipaddress
 import socket
 import ssl
 import struct
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -168,23 +169,26 @@ class Prober:
         self.geo = geo
         self.last_run = 0
         self.running = False
+        self.lock = threading.Lock()
+        self.error = store.meta('singbox_probe_error', '')
+
+    def outbounds(self):
+        skip = set(self.settings.get('probes.skip') or [])
+        return [o for o in self.topology.describe()['outbounds'] if o['probe'] and o['tag'] not in skip]
 
     def due(self):
-        return self.settings.get('probes.enabled') and time.time() - self.last_run >= int(self.settings.get('probes.interval_seconds'))
+        return self.settings.get('probes.enabled') and not self.running and time.time() - self.last_run >= int(self.settings.get('probes.interval_seconds'))
 
     def run(self):
-        if self.running:
+        if not self.lock.acquire(blocking=False):
             return []
         self.running = True
         try:
             self.last_run = time.time()
             targets = self.settings.get('probes.targets') or []
-            skip = set(self.settings.get('probes.skip') or [])
             timeout = int(self.settings.get('probes.timeout_seconds'))
             results = []
-            for outbound in self.topology.describe()['outbounds']:
-                if not outbound['probe'] or outbound['tag'] in skip:
-                    continue
+            for outbound in self.outbounds():
                 upstream = self.topology.proxy(outbound['tag']) if outbound['probe'] == 'proxy' else None
                 for target in targets:
                     result = probe(target, upstream, timeout)
@@ -195,9 +199,45 @@ class Prober:
                 c.executemany('INSERT INTO probes VALUES(?,?,?,?,?,?,?,?,?,?)', [
                     (at, r['outbound'], r['target'], r['ok'], r['exit_ip'], r['colo'], r['loc'], r['connect_ms'], r['total_ms'], r['error'])
                     for r in results])
+                c.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('singbox_probe_error', ''))
+            self.error = ''
             return results
+        except Exception as exc:
+            # An aborted worker is not a completed failure round. Never persist exception text
+            # which may contain an upstream address or credential.
+            self.error = type(exc).__name__
+            with self.store.write() as c:
+                c.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('singbox_probe_error', self.error))
+            return []
         finally:
             self.running = False
+            self.lock.release()
+
+    def probe_health(self, limit, interval):
+        """Per-target completed rounds, deduplicated by timestamp; never count evaluations."""
+        output = {}
+        c = self.store.reader()
+        for outbound in self.outbounds():
+            tag = outbound['tag']
+            latest = c.execute('SELECT MAX(at) FROM probes WHERE outbound=?', (tag,)).fetchone()[0]
+            states = {}
+            for target in self.settings.get('probes.targets') or []:
+                rows = c.execute('''SELECT at,MAX(ok) ok,MAX(error) error FROM probes
+WHERE outbound=? AND target=? GROUP BY at ORDER BY at DESC LIMIT ?''',
+                    (tag, target['name'], max(1, min(100, limit)))).fetchall()
+                # A target omitted from the most recent round is unknown, not its older value.
+                if not rows or rows[0]['at'] != latest:
+                    continue
+                count, previous = 0, rows[0]['at']
+                for row in rows:
+                    if previous - row['at'] > max(120, interval * 3) or row['ok']:
+                        break
+                    count += 1
+                    previous = row['at']
+                states[target['name']] = {'at': rows[0]['at'], 'ok': bool(rows[0]['ok']),
+                                          'failures': count, 'error': rows[0]['error']}
+            output[tag] = states
+        return output
 
     def latest(self):
         rows = self.store.reader().execute('''SELECT p.* FROM probes p JOIN (SELECT outbound,target,MAX(at) at FROM probes GROUP BY 1,2) m

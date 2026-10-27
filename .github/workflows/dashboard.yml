@@ -42,7 +42,7 @@ jobs:
           cache-dependency-path: dashboard/web/package-lock.json
       - run: npm ci --no-audit --no-fund
         working-directory: dashboard/web
-      - run: node --test tests/engines.test.mjs
+      - run: node --test tests/engines.test.mjs tests/node-activity.test.mjs
         working-directory: dashboard/web
       - run: npm run build
         working-directory: dashboard/web

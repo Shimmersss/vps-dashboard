@@ -6,6 +6,7 @@ and the server's public address is discovered by probes.
 """
 import copy
 import json
+import ipaddress
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -35,7 +36,7 @@ DEFAULTS = {
         'subscribe_interval_ms': 1000,
     },
     # access_control: also ban on the public ports of Xray inbounds (needs firewall privileges; see docs/xray.md).
-    'xray': {'instances': [], 'poll_seconds': 2, 'access_control': False},
+    'xray': {'instances': [], 'poll_seconds': 2, 'access_control': False, 'node_only': False},
     'gate': {
         # Enabled once the CDN origin header is verified; see docs/dashboard.md.
         'enabled': False,
@@ -70,7 +71,8 @@ DEFAULTS = {
         # Outbound tags to skip; empty = probe every supported outbound.
         'skip': [],
     },
-    'reachability': {'enabled': False, 'interval_seconds': 600, 'failures': 2, 'targets': []},
+    'reachability': {'enabled': False, 'interval_seconds': 600, 'failures': 2, 'targets': [],
+                     'resolver': '223.5.5.5', 'fallback_resolver': '119.29.29.29'},
     'live': {
         'history_seconds': 900,
         'top_connections': 60,
@@ -253,6 +255,13 @@ def load(settings_path=None, secrets_path=None, environ=None):
 
 
 def validate(values, secrets):
+    for key in ('reachability.resolver', 'reachability.fallback_resolver'):
+        try:
+            resolver = ipaddress.ip_address(get_path(values, key))
+            if resolver.version != 4 or not resolver.is_global:
+                raise ValueError('Resolver must be a public IPv4 address')
+        except (ValueError, TypeError):
+            raise ValueError(key + ' must be a public IPv4 address') from None
     enabled = get_path(values, 'singbox.enabled', True)
     if not isinstance(enabled, bool):
         raise ValueError('singbox.enabled must be a boolean')
@@ -260,6 +269,8 @@ def validate(values, secrets):
         raise ValueError('At least one monitoring engine must be configured')
     if not isinstance(get_path(values, 'xray.access_control', False), bool):
         raise ValueError('xray.access_control must be a boolean')
+    if not isinstance(get_path(values, 'xray.node_only', False), bool):
+        raise ValueError('xray.node_only must be a boolean')
     required = ('username', 'salt', 'password_hash') + (('api_secret',) if enabled else ())
     missing = [k for k in required if not secrets.get(k)]
     if missing:

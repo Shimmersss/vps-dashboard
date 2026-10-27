@@ -14,7 +14,7 @@
 - **网络质量**：网卡实时收发（`/proc/net/dev`）、网卡流量与代理载荷对比、链路质量趋势。链路质量每 60 秒用 `ss -ti` 读取 TCP 平滑 RTT 和区间重传，分四段：客户端 → 服务器（直连入口）、CDN 边缘 → 源站、服务器 → 上游代理、服务器 → 直连目标。UDP（QUIC）入站不在这项 TCP 统计内，但流量、连接和封禁照常统计。
 - **出口节点**：各出站的出口地址、属地与 ASN、探测耗时曲线、出口地址变化记录。
 - **访问控制**：封禁单个公网 IP 或网段（IPv4 ≥ /16，IPv6 ≥ /32），可设 1 小时到 30 天到期，到期自动解除并记入审计。
-- **告警**：采集中断、出口连续探测失败、出口地址变化、证书将到期、磁盘使用、服务状态、单 IP 每日流量阈值。可选 Webhook 推送。
+- **告警**：采集中断、各出口逐网站连续探测失败、探测任务异常/数据过期、出口地址变化、可选大陆入口 HTTPS 检测、证书将到期、磁盘使用、服务状态、单 IP 每日流量阈值。可选 Webhook 推送。
 - **会话与审计**：登录、封禁、解除、断开连接、设置修改、手动探测都有记录。
 - **系统与设置**：服务、证书、磁盘、账本、迁移、定位库版本、防火墙端口；可修改显示名称、入口类型、告警阈值、探测间隔（存入面板数据库，不改服务器配置文件）。
 
@@ -32,6 +32,12 @@
 ## 出口探测
 
 每 5 分钟（可调）经每个 direct / socks / http 出站请求 `probes.targets` 中的目标，记录出口地址、机房与耗时。trace 类目标（`/cdn-cgi/trace`）回显出口 IP；`"kind": "http"` 的目标只检查 HTTPS 可达性，2xx/3xx 算成功。默认目标：Cloudflare trace，以及 Instagram、YouTube、Facebook；可以在 site.json 里换成自己关心的站点。可达不代表视频播放、登录或地区解锁。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
+
+`alerts.probe_failures` 默认 2（0 表示关闭探测告警），按“出口 × 网站”的已完成轮次触发。例如 trace 和 YouTube 正常，Instagram 连续两轮失败，仍会单独告警。重复评估、标为已读和重启不增加次数；数据缺失、过期或任务中断单独显示监控异常，保留未恢复的网站故障，只有该目标新的成功结果才关闭。被 `probes.skip` 跳过的出口不再触发这些告警；原“整个出口全部目标失败”和出口地址变化告警保留。任务异常仅保存异常类型，不保存可能包含凭据的原始异常消息。
+
+sing-box 和 Xray 的告警列表、未读数与批量已读按监控来源隔离；站点证书、磁盘和大陆入口检测为共享告警，任一来源标为已读会同步共享记录。不传 `engine` 的旧告警 API 保留管理全部来源的兼容行为。
+
+两种模式都能在告警页查看[公开大陆入口 HTTPS 检测](xray.md#可选公开的国内入口检测)。默认关闭，按配置的站点域名及无令牌公开路径检测，并非完整订阅下载或 sing-box/Xray 协议握手。它共用站点入口结果，不使用公开探测点传递节点凭据。
 
 ## 配置分层
 
@@ -55,7 +61,7 @@
 
 - 后端 `dashboard/panel/`（入口 `dashboard/app.py`）；前端 `dashboard/web/`（Vite + Vue 3 + ECharts），构建产物在 `dashboard/static/app/`，服务器不需要 Node。
 - 前端构建：`cd dashboard/web && npm run build`。
-- 测试：`cd dashboard/tests && python3.10 -m unittest test_panel test_media_probes test_xray test_xray_dashboard test_alert_sources test_engine_modes`，离线运行，不依赖防火墙或 sing-box；`test_xray` 的原生测试需要 `XRAY_TEST_BINARY` 指向真实 Xray。前端：`node --test tests/engines.test.mjs`。
+- 测试：`cd dashboard/tests && python3.10 -m unittest test_panel test_media_probes test_xray test_xray_dashboard test_alert_sources test_engine_modes`，离线运行，不依赖防火墙或 sing-box；`test_xray` 的原生测试需要 `XRAY_TEST_BINARY` 指向真实 Xray。前端：`node --test tests/engines.test.mjs tests/node-activity.test.mjs`。
 - 本地预览：`python dashboard/dev/devserver.py`（合成数据）；加 `--xray /path/to/xray` 同时预览 Xray 页面（真实本地核心）。
 - 部署：`.venv/bin/python -B scripts/deploy-dashboard.py`，加 `--check-only` 只做只读预检；模式（sing-box / Xray / 共存）由 site.json 决定，见 [部署模式](deployment.md)。流程：
   1. 只读预检；

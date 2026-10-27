@@ -47,6 +47,7 @@ class Client:
     def __init__(self, instance):
         validate_instance(instance)
         self.instance = instance
+        self.node_only = False
         self.channel = grpc.insecure_channel(instance['api_address'])
         self.query_rpc = self.channel.unary_unary(pb.QUERY, request_serializer=pb.QueryStatsRequest.SerializeToString,
                                                   response_deserializer=pb.QueryStatsResponse.FromString)
@@ -61,7 +62,7 @@ class Client:
 
     def counters(self):
         """Inbound, user and outbound traffic counters in one read-only query."""
-        reply = self.query_rpc(pb.QueryStatsRequest(pattern='>>>traffic>>>', reset=False), timeout=4)
+        reply = self.query_rpc(pb.QueryStatsRequest(pattern='inbound>>>' if self.node_only else '>>>traffic>>>', reset=False), timeout=4)
         return {s.name: max(0, s.value) for s in reply.stat}
 
     def online_users(self):
@@ -201,6 +202,7 @@ class Ledger:
 CREATE TABLE IF NOT EXISTS counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
 CREATE TABLE IF NOT EXISTS daily(day TEXT,instance TEXT,tag TEXT,up INTEGER,down INTEGER,PRIMARY KEY(day,instance,tag));
 CREATE TABLE IF NOT EXISTS minute(ts INTEGER,instance TEXT,up INTEGER,down INTEGER,PRIMARY KEY(ts,instance));
+CREATE TABLE IF NOT EXISTS node_activity(instance TEXT,tag TEXT,at INTEGER,PRIMARY KEY(instance,tag));
 CREATE TABLE IF NOT EXISTS user_counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
 CREATE TABLE IF NOT EXISTS user_daily(day TEXT,instance TEXT,tag TEXT,up INTEGER,down INTEGER,PRIMARY KEY(day,instance,tag));
 CREATE TABLE IF NOT EXISTS out_counters(instance TEXT,tag TEXT,generation TEXT,up INTEGER,down INTEGER,total_up INTEGER,total_down INTEGER,first INTEGER,seen INTEGER,PRIMARY KEY(instance,tag));
@@ -231,6 +233,14 @@ CREATE INDEX IF NOT EXISTS xray_probe_history_time ON probe_history(at);
                         rate_up, rate_down = du / elapsed, dd / elapsed
                 total_up = (old['total_up'] if old else 0) + du
                 total_down = (old['total_down'] if old else 0) + dd
+                last_activity = None
+                if kind == 'inbound':
+                    if old and reset:
+                        self.db.execute('DELETE FROM node_activity WHERE instance=? AND tag=?', (instance, tag))
+                    if rate_up is not None and rate_down is not None and du + dd > 0:
+                        self.db.execute('INSERT OR REPLACE INTO node_activity VALUES(?,?,?)', (instance, tag, now))
+                    active = self.db.execute('SELECT at FROM node_activity WHERE instance=? AND tag=?', (instance, tag)).fetchone()
+                    last_activity = active['at'] if active else None
                 first = old['first'] if old else now
                 self.db.execute('INSERT OR REPLACE INTO %s VALUES(?,?,?,?,?,?,?,?,?)' % counters_table, (instance, tag, gen, up, down, total_up, total_down, first, now))
                 self.db.execute('INSERT INTO %s VALUES(?,?,?,?,?) ON CONFLICT(day,instance,tag) DO UPDATE SET up=up+excluded.up,down=down+excluded.down' % daily_table, (day, instance, tag, du, dd))
@@ -238,7 +248,8 @@ CREATE INDEX IF NOT EXISTS xray_probe_history_time ON probe_history(at);
                     self.db.execute('INSERT INTO minute VALUES(?,?,?,?) ON CONFLICT(ts,instance) DO UPDATE SET up=up+excluded.up,down=down+excluded.down', (now // 60 * 60, instance, du, dd))
                 today = self.db.execute('SELECT up,down FROM %s WHERE day=? AND instance=? AND tag=?' % daily_table, (day, instance, tag)).fetchone()
                 result[tag] = {'upload': total_up, 'download': total_down, 'today_upload': today['up'], 'today_download': today['down'],
-                               'up_rate': rate_up, 'down_rate': rate_down, 'since': first, 'sampled_at': now, 'counter_reset': bool(old and reset)}
+                               'up_rate': rate_up, 'down_rate': rate_down, 'since': first, 'sampled_at': now, 'counter_reset': bool(old and reset),
+                               **({'last_activity': last_activity} if kind == 'inbound' else {})}
             self.db.execute('DELETE FROM minute WHERE ts<?', (now - 31 * 86400,))
         return result
 
@@ -310,6 +321,9 @@ class Monitor:
             raise ValueError('Duplicate Xray instance ID')
         self.ledger = Ledger(settings) if self.instances else None
         self.clients = {i['id']: client_factory(i) for i in self.instances}
+        self.node_only = bool(settings.get('xray.node_only'))
+        for client in self.clients.values():
+            client.node_only = self.node_only
         self.generation_fn = generation_fn
         self.lock = threading.RLock()
         self.probe_lock = threading.Lock()
@@ -334,13 +348,13 @@ class Monitor:
                         raise RuntimeError('Inbound statistics not enabled')
                     observed[node['tag']] = tuple(raw[name] for name in names)
                 levels, members = {}, {}
-                for node in nodes:
+                for node in ([] if self.node_only else nodes):
                     for email in node['_emails']:
                         levels.setdefault(email, node['_levels'].get(email, 0))
                         members.setdefault(email, []).append(node['key'])
-                ips = self._online(i, client, levels)
+                ips = self._online(i, client, levels) if levels else {}
                 users = {}
-                counted = policy_levels(i, 'statsUserUplink', 'statsUserDownlink')
+                counted = set() if self.node_only else policy_levels(i, 'statsUserUplink', 'statsUserDownlink')
                 for email, level in levels.items():
                     names = ['user>>>' + email + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
                     if all(name in raw for name in names):
@@ -350,7 +364,7 @@ class Monitor:
                         # zero bytes, and the first value seen later must count in full rather than become a baseline.
                         users[email] = (0, 0)
                 outbound = {}
-                for out in outbound_list(i):
+                for out in ([] if self.node_only else outbound_list(i)):
                     names = ['outbound>>>' + out['tag'] + '>>>traffic>>>' + d for d in ('uplink', 'downlink')]
                     if all(name in raw for name in names):
                         outbound[out['tag']] = (out['protocol'], tuple(raw[name] for name in names))
@@ -363,19 +377,19 @@ class Monitor:
                 now = int(time.time())
                 day = self.day(now)
                 values = self.ledger.ingest(key, gen, observed, now, day)
-                user_values = self.ledger.ingest(key, gen, users, now, day, 'user')
-                out_values = self.ledger.ingest(key, gen, {t: v for t, (_, v) in outbound.items()}, now, day, 'outbound')
+                user_values = {} if self.node_only else self.ledger.ingest(key, gen, users, now, day, 'user')
+                out_values = {} if self.node_only else self.ledger.ingest(key, gen, {t: v for t, (_, v) in outbound.items()}, now, day, 'outbound')
                 public = []
                 for n in nodes:
                     sources, supported = {}, bool(n['_emails'])
-                    for email in n['_emails']:
+                    for email in ([] if self.node_only else n['_emails']):
                         if ips[email] is None:
                             supported = False
                         else:
                             for ip, last in ips[email].items():
                                 sources[ip] = max(sources.get(ip, 0), last)
                     public.append({k: v for k, v in n.items() if not k.startswith('_')} | values[n['tag']] |
-                                  {'online_sources': sorted(sources) if supported else None})
+                                  {'online_sources': sorted(sources) if supported and not self.node_only else None})
                 user_rows = [{'key': key + ':' + email, 'instance': key, 'email': email, 'nodes': members[email],
                               'online_ips': sorted(ips[email]) if ips[email] is not None else None} |
                              (user_values.get(email) or {'upload': None, 'download': None, 'today_upload': None, 'today_download': None,
@@ -436,6 +450,8 @@ class Monitor:
             n['label'] = (self.settings.get('labels.xray') or {}).get(n['key']) or n['label']
             if not n['fresh']:
                 n.update(up_rate=None, down_rate=None, online_sources=None)
+            n['online_activity'] = (bool(n.get('last_activity') and int(time.time()) - n['last_activity'] <= 60)
+                                    if n['fresh'] and n['up_rate'] is not None and n['down_rate'] is not None else None)
         for row in users + outbounds:
             if not row['fresh']:
                 row.update(up_rate=None, down_rate=None)
@@ -446,11 +462,14 @@ class Monitor:
         totals.update(rates_ready=ready, up_rate=sum(n['up_rate'] for n in nodes) if ready else None,
                       down_rate=sum(n['down_rate'] for n in nodes) if ready else None,
                       online_users=sum(1 for u in users if u['online_ips']) if any(u['online_ips'] is not None for u in users) else None)
-        return {'enabled': bool(self.instances), 'instances': states, 'nodes': nodes, 'users': users, 'outbound_stats': outbounds,
+        totals.update(online_nodes=sum(n['online_activity'] is True for n in nodes) if any(n['online_activity'] is not None for n in nodes) else None,
+                      online_nodes_unknown=sum(n['online_activity'] is None for n in nodes))
+        return {'enabled': bool(self.instances), 'node_only': self.node_only, 'activity_window_seconds': 60,
+                'instances': states, 'nodes': nodes, 'users': users, 'outbound_stats': outbounds,
                 'runtimes': runtimes, 'totals': totals,
                 'series': self.ledger.series(int(time.time())) if self.ledger and detail else [], 'realtime': samples,
                 'probes': self.ledger.probes() if self.ledger else {}, 'probe_running': self.probe_running, 'probe_error': self.probe_error,
-                'scope': 'Xray 入站原生计数；自首次接入采样起，未回填历史。用户流量按 email 计数，同一用户在多个入站共用一份计数。在线来源按核心口径，经过 CDN/Nginx 时可能为边缘或回环，不能冒充真实客户端 IP。',
+                'scope': ('仅统计节点入站流量。在线节点按近 60 秒采样到的真实流量判断；无近期流量不代表连接断开，缺失/过期采样为未知。' if self.node_only else 'Xray 入站原生计数；自首次接入采样起，未回填历史。用户流量按 email 计数，同一用户在多个入站共用一份计数。在线来源按核心口径，经过 CDN/Nginx 时可能为边缘或回环，不能冒充真实客户端 IP。'),
                 'limitations': 'Xray 不提供逐连接字节、目标域名和关闭单连接接口；用户流量不分配到任何 IP。跨日采样中断期间的增量计入恢复日。'}
 
     def probe_async(self):

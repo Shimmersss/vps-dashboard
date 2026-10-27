@@ -74,11 +74,10 @@ def details(ctx, span):
         'daily': [], 'user_daily': [], 'outbound_daily': [], 'minutes': [], 'sample_step': step, 'probe_history': [], 'probe_history_truncated': False}
     result.update(engine='xray', range=span, since=now - seconds,
                   history_scope='每分钟按实例记录入站流量，用户与出站按自然日累计；逐连接、目标域名和单个 IP 的字节未由 Xray 提供。探测历史最多保留 7 天。')
+    if ctx.settings.get('xray.node_only'):
+        result.update(user_daily=[], outbound_daily=[], history_scope='仅展示节点入站日累计与实例分钟增量；既有用户/出站历史账本保留。')
     return result
 
 
 def alerts_for_xray(ctx, rows):
-    services = {i['service'] for i in ctx.xray.instances}
-    services.update(n for n in (ctx.settings.get('alerts.services') or []) if 'nginx' in n)
-    return [r for r in rows if r['key'].startswith(('xray:', 'reachability:')) or r['key'] in ('cert', 'disk')
-            or r['key'] in {'service:' + s for s in services}]
+    return ctx.alerts.for_engine(rows, 'xray')

@@ -81,7 +81,7 @@ const XrayMain = lazy(() => import('./views/XrayMain.vue'))
 const shared = new Set(['alerts', 'security'])
 // Bans are engine-neutral firewall rules: Xray uses the shared page once access control is enabled.
 const resolvedView = computed(() => state.engine === 'xray' && !shared.has(route.name) && !(route.name === 'bans' && state.overview?.features?.xray_bans) ? XrayMain : views[route.name])
-const activeRoutes = computed(() => ROUTES.filter(r => state.engine === 'xray' || r.name !== 'xray').map(r => ({ ...r, title: state.engine === 'xray' ? r.name === 'xray' ? '节点列表' : r.xrayTitle || r.title : r.title })))
+const activeRoutes = computed(() => ROUTES.filter(r => state.engine === 'xray' || r.name !== 'xray').map(r => ({ ...r, title: state.engine === 'xray' ? r.name === 'xray' ? '节点列表' : r.name === 'clients' && state.xray?.node_only ? '在线节点' : r.xrayTitle || r.title : r.title })))
 const groups = computed(() => ['监控', '数据', '管理'].map(name => ({ name, routes: activeRoutes.value.filter(r => r.group === name) })))
 const current = computed(() => activeRoutes.value.find(r => r.name === route.name) || activeRoutes.value[0])
 const title = computed(() => state.overview?.title || '网络节点监控')
