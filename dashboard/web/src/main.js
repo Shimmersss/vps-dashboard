@@ -11,6 +11,13 @@ icon.type = 'image/svg+xml'
 icon.href = BASE + '/static/favicon.svg'
 document.head.appendChild(icon)
 
-initTheme()
-initRouter()
-createApp(App).mount('#app')
+async function boot() {
+  await initTheme()
+  initRouter()
+  createApp(App).mount('#app')
+}
+
+boot().catch(error => {
+  console.error(error)
+  document.getElementById('app').textContent = '页面加载失败，请刷新重试。'
+})

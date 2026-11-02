@@ -1,14 +1,13 @@
 // Theme: data colors come from CSS custom properties so light/dark stay in one place.
 import { state } from './state.js'
+import { waitForStyles } from './stylesheet-ready.js'
 
 const KEY = 'joysol-theme'
 
-function read(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-}
-
 export function refreshTokens() {
-  state.tokens = {
+  const styles = getComputedStyle(document.documentElement)
+  const read = name => styles.getPropertyValue(name).trim()
+  const tokens = {
     surface: read('--surface-1'), page: read('--page'), ink: read('--text-primary'), ink2: read('--text-secondary'),
     muted: read('--text-muted'), grid: read('--grid'), axis: read('--axis'), border: read('--border'),
     accent: read('--accent'),
@@ -17,6 +16,8 @@ export function refreshTokens() {
     good: read('--status-good'), warning: read('--status-warning'), serious: read('--status-serious'), critical: read('--status-critical'),
     land: read('--map-land'), landLine: read('--map-line'),
   }
+  if (Object.values(tokens).flat().some(value => !value)) throw new Error('Theme colors unavailable')
+  state.tokens = tokens
 }
 
 export function currentTheme() {
@@ -25,10 +26,11 @@ export function currentTheme() {
   return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
-export function initTheme() {
+export async function initTheme() {
   let saved = ''
   try { saved = localStorage.getItem(KEY) || '' } catch { saved = '' }
   if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved
+  await waitForStyles()
   state.theme = currentTheme()
   refreshTokens()
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
