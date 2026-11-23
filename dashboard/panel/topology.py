@@ -8,6 +8,9 @@ import json
 import os
 import re
 import threading
+import subprocess
+import tempfile
+from pathlib import Path
 
 PROXY_TYPES = {'socks', 'http'}
 LAYERED_TRANSPORTS = {'ws', 'httpupgrade', 'grpc', 'http'}
@@ -82,16 +85,26 @@ class Topology:
         if not self.settings.get('singbox.enabled'):
             return False
         try:
-            mtime = os.stat(self.path).st_mtime
+            path = Path(self.path)
+            mtime = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size)
+                          for p in sorted(path.glob('*.json'))) if path.is_dir() else os.stat(self.path).st_mtime_ns
         except OSError as exc:
             self.error = type(exc).__name__
             return False
         if mtime == self.mtime:
             return False
         try:
-            with open(self.path) as handle:
-                config = json.load(handle)
-        except (OSError, ValueError) as exc:
+            if path.is_dir():
+                # merge reads an existing output file first; /dev/stdout would block reading its own pipe.
+                with tempfile.TemporaryDirectory(prefix='dashboard-config-') as folder:
+                    merged = Path(folder) / 'merged.json'
+                    subprocess.run([self.settings.get('singbox.binary'), 'merge', str(merged), '-C', self.path],
+                                   capture_output=True, text=True, timeout=15, check=True)
+                    config = json.loads(merged.read_text())
+            else:
+                with open(self.path) as handle:
+                    config = json.load(handle)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             self.error = type(exc).__name__
             return False
         with self.lock:

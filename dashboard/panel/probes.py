@@ -79,6 +79,51 @@ def parse_trace(body):
     return values
 
 
+class _TunnelTLS:
+    """Run target TLS over the authenticated TLS connection to the proxy."""
+
+    def __init__(self, transport, hostname):
+        self.transport = transport
+        self.incoming = ssl.MemoryBIO()
+        self.outgoing = ssl.MemoryBIO()
+        self.tls = ssl.create_default_context().wrap_bio(self.incoming, self.outgoing, server_hostname=hostname)
+        self._exchange(self.tls.do_handshake)
+
+    def _exchange(self, operation, *args):
+        while True:
+            try:
+                result = operation(*args)
+            except ssl.SSLWantReadError:
+                self._flush()
+                incoming = self.transport.recv(16384)
+                if incoming:
+                    self.incoming.write(incoming)
+                else:
+                    self.incoming.write_eof()
+            except ssl.SSLWantWriteError:
+                self._flush()
+            else:
+                self._flush()
+                return result
+
+    def _flush(self):
+        if self.outgoing.pending:
+            self.transport.sendall(self.outgoing.read())
+
+    def sendall(self, data):
+        while data:
+            data = data[self._exchange(self.tls.write, data):]
+
+    def recv(self, size):
+        try:
+            return self._exchange(self.tls.read, size)
+        except ssl.SSLEOFError:
+            return b''
+
+    def close(self):
+        self.transport.close()
+
+
 def fetch(url, upstream=None, timeout=12):
     """GET url, optionally through an upstream proxy. Returns (status, body, connect_ms, total_ms)."""
     parts = urlsplit(url)
@@ -101,7 +146,10 @@ def fetch(url, upstream=None, timeout=12):
                 http_connect(sock, host, port, upstream.get('username', ''), upstream.get('password', ''))
         connected = time.monotonic()
         if parts.scheme == 'https':
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+            if isinstance(sock, ssl.SSLSocket):
+                sock = _TunnelTLS(sock, host)
+            else:
+                sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
         path = (parts.path or '/') + ('?' + parts.query if parts.query else '')
         sock.sendall(('GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: joysol-panel-probe/2\r\nAccept: */*\r\nConnection: close\r\n\r\n' % (path, host)).encode())
         data = b''
@@ -152,13 +200,19 @@ def probe(target, upstream=None, timeout=12):
         except ValueError:
             ip = ''
         result.update(exit_ip=ip, colo=trace.get('colo', '')[:8], loc=trace.get('loc', '')[:4])
-        if (is_http and 200 <= status < 400) or (not is_http and status == 200 and ip):
+        expected = status == target.get('expected_status') and target.get('expected_body', '') in body
+        if (is_http and (200 <= status < 400 or expected)) or (not is_http and status == 200 and ip):
             result['ok'] = 1
         else:
             result['error'] = 'HTTP %d' % status
     except (OSError, ProbeError, ssl.SSLError, ValueError) as exc:
         result['error'] = str(exc)[:120] if isinstance(exc, ProbeError) else type(exc).__name__
     return result
+
+
+def targets_for(settings, outbound):
+    overrides = settings.get('probes.targets_by_outbound') or {}
+    return overrides.get(outbound, settings.get('probes.targets') or [])
 
 
 class Prober:
@@ -185,12 +239,11 @@ class Prober:
         self.running = True
         try:
             self.last_run = time.time()
-            targets = self.settings.get('probes.targets') or []
             timeout = int(self.settings.get('probes.timeout_seconds'))
             results = []
             for outbound in self.outbounds():
                 upstream = self.topology.proxy(outbound['tag']) if outbound['probe'] == 'proxy' else None
-                for target in targets:
+                for target in targets_for(self.settings, outbound['tag']):
                     result = probe(target, upstream, timeout)
                     result['outbound'] = outbound['tag']
                     results.append(result)
@@ -221,7 +274,7 @@ class Prober:
             tag = outbound['tag']
             latest = c.execute('SELECT MAX(at) FROM probes WHERE outbound=?', (tag,)).fetchone()[0]
             states = {}
-            for target in self.settings.get('probes.targets') or []:
+            for target in targets_for(self.settings, tag):
                 rows = c.execute('''SELECT at,MAX(ok) ok,MAX(error) error FROM probes
 WHERE outbound=? AND target=? GROUP BY at ORDER BY at DESC LIMIT ?''',
                     (tag, target['name'], max(1, min(100, limit)))).fetchall()
@@ -243,7 +296,10 @@ WHERE outbound=? AND target=? GROUP BY at ORDER BY at DESC LIMIT ?''',
         rows = self.store.reader().execute('''SELECT p.* FROM probes p JOIN (SELECT outbound,target,MAX(at) at FROM probes GROUP BY 1,2) m
 ON p.outbound=m.outbound AND p.target=m.target AND p.at=m.at''').fetchall()
         out = {}
+        active = {o['tag']: {t['name'] for t in targets_for(self.settings, o['tag'])} for o in self.outbounds()}
         for r in rows:
+            if r['target'] not in active.get(r['outbound'], ()):
+                continue
             entry = out.setdefault(r['outbound'], {'outbound': r['outbound'], 'at': r['at'], 'targets': {}, 'exit_ip': '', 'geo': None})
             entry['at'] = max(entry['at'], r['at'])
             entry['targets'][r['target']] = {k: r[k] for k in ('ok', 'exit_ip', 'colo', 'loc', 'connect_ms', 'total_ms', 'error')}
