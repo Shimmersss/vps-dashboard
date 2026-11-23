@@ -430,4 +430,3 @@ class NetworkQueries:
         with self.store.write() as c:
             c.execute('DELETE FROM quality WHERE ts<?', (now - quality_days * 86400,))
             c.execute('DELETE FROM nic_minute WHERE ts<?', (now - minute_days * 86400,))
-

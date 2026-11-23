@@ -153,8 +153,11 @@ def create_app(settings=None, firewall_runner=None, start_workers=None):
         start_workers = not os.environ.get('JOYSOL_TEST')
     ctx = Context(settings, firewall_runner, start_workers)
     app = Flask(__name__, static_folder=None)
-    app.config.update(MAX_CONTENT_LENGTH=16384, JSON_AS_ASCII=False, JSON_SORT_KEYS=False)
+    app.config.update(MAX_CONTENT_LENGTH=2 * 1024 * 1024, JSON_AS_ASCII=False, JSON_SORT_KEYS=False)
     app.extensions['joysol'] = ctx
     from .routes import register
     register(app, ctx)
+    if settings.get('management.enabled', False):
+        from .subscriptions import register as register_subscriptions
+        register_subscriptions(app, settings.get('management.subscription_dir', str(settings.data_dir / 'subscriptions')))
     return app

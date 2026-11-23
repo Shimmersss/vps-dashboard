@@ -62,6 +62,8 @@ import { BASE, post } from './lib/api.js'
 
 const lazy = loader => defineAsyncComponent(loader)
 const views = {
+  rules: lazy(() => import('./views/Rules.vue')),
+  manage: lazy(() => import('./views/Manage.vue')),
   xray: lazy(() => import('./views/Xray.vue')),
   overview: Overview,
   live: lazy(() => import('./views/Live.vue')),
@@ -78,10 +80,19 @@ const views = {
   system: lazy(() => import('./views/System.vue')),
 }
 const XrayMain = lazy(() => import('./views/XrayMain.vue'))
-const shared = new Set(['alerts', 'security'])
+const shared = new Set(['alerts', 'security', 'manage', 'rules'])
 // Bans are engine-neutral firewall rules: Xray uses the shared page once access control is enabled.
 const resolvedView = computed(() => state.engine === 'xray' && !shared.has(route.name) && !(route.name === 'bans' && state.overview?.features?.xray_bans) ? XrayMain : views[route.name])
-const activeRoutes = computed(() => ROUTES.filter(r => state.engine === 'xray' || r.name !== 'xray').map(r => ({ ...r, title: state.engine === 'xray' ? r.name === 'xray' ? '节点列表' : r.name === 'clients' && state.xray?.node_only ? '在线节点' : r.xrayTitle || r.title : r.title })))
+const activeRoutes = computed(() => ROUTES.filter(r =>
+  (state.engine === 'xray' || r.name !== 'xray') &&
+  (r.name !== 'manage' || state.overview?.features?.management) &&
+  (r.name !== 'rules' || state.overview?.features?.client_rules)
+).map(r => {
+  if (state.engine !== 'xray') return r
+  if (r.name === 'xray') return { ...r, title: '节点列表' }
+  if (r.name === 'clients' && state.xray?.node_only) return { ...r, title: '在线节点' }
+  return { ...r, title: r.xrayTitle || r.title }
+}))
 const groups = computed(() => ['监控', '数据', '管理'].map(name => ({ name, routes: activeRoutes.value.filter(r => r.group === name) })))
 const current = computed(() => activeRoutes.value.find(r => r.name === route.name) || activeRoutes.value[0])
 const title = computed(() => state.overview?.title || '网络节点监控')
@@ -91,7 +102,11 @@ const health = computed(() => engineStatus(state.engine, state.overview, state.x
 const linkClass = computed(() => health.value.kind)
 const linkText = computed(() => health.value.text)
 const linkTitle = computed(() => state.engine === 'xray' ? '来自 Xray 原生入站计数，每 2 秒刷新，未知速率留空' : 'sing-box 连接事件')
-const notice = computed(() => health.value.notice ? { kind: health.value.kind, text: health.value.notice } : null)
+const notice = computed(() => {
+  const o = state.overview
+  if (state.engine === 'singbox' && o?.features?.management && !o.topology?.inbounds?.length) return { kind: 'warn', text: '尚未连接节点，请到服务器管理中选择 sing-box 或 Xray 安装。' }
+  return health.value.notice ? { kind: health.value.kind, text: health.value.notice } : null
+})
 const unread = computed(() => state.engine === 'xray' ? state.overview?.alerts_xray || 0 : state.overview?.alerts || 0)
 
 watch(title, t => { document.title = t + ' · ' + current.value.title }, { immediate: true })
@@ -107,7 +122,7 @@ let timer = null
 let xrayTimer = null
 const becameVisible = () => { state.now = Date.now(); if (!document.hidden) { refreshOverview(); if (state.engine === 'xray') refreshXray() } }
 onMounted(() => {
-  refreshOverview()
+  refreshOverview().then(o => { if (o?.singbox_enabled !== false && !o?.xray?.enabled && o?.features?.management && !o.topology?.inbounds?.length && !location.hash) go('manage') })
   timer = setInterval(() => { if (!document.hidden) refreshOverview() }, 15000)
   xrayTimer = setInterval(() => { state.now = Date.now(); if (state.engine === 'xray' && !document.hidden) refreshXray() }, 2000)
   document.addEventListener('visibilitychange', becameVisible)

@@ -2,6 +2,8 @@
 import { reactive } from 'vue'
 
 export const ROUTES = [
+  { name: 'rules', title: '代理规则', group: '管理', icon: 'exits' },
+  { name: 'manage', title: '服务器管理', group: '管理', icon: 'system' },
   { name: 'overview', title: '概览', group: '监控', icon: 'overview' },
   { name: 'xray', title: 'Xray 节点', group: '监控', icon: 'exits' },
   { name: 'live', title: '实时连接', xrayTitle: '实时速率', group: '监控', icon: 'live' },
