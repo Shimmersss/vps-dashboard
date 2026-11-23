@@ -49,7 +49,7 @@
             <span class="mono small nowrap">{{ i.tag }}</span>
             <input v-model="draft.inbounds[i.tag]" class="input" maxlength="40" :placeholder="i.tag" :aria-label="i.tag + ' 显示名称'">
             <select v-model="draft.entries[i.tag]" class="input" :aria-label="i.tag + ' 入口类型'">
-              <option value="">自动（{{ i.public ? '直连' : 'CDN' }}）</option><option value="direct">直连</option><option value="cdn">CDN 中转</option>
+              <option value="">自动</option><option value="direct">直连</option><option value="proxy">Nginx 中转</option><option value="cdn">CDN 中转</option>
             </select>
           </div>
         </div>

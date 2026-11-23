@@ -18,9 +18,11 @@
           <div class="hop"><span class="h-kind">客户端</span><b>{{ row.clients }} 个 IP</b><span class="h-meta">{{ bytes(row.bytes) }}</span></div>
           <template v-if="row.entry === 'cdn'">
             <div class="link"></div>
-            <div class="hop"><span class="h-kind">CDN 边缘</span><b>阿里云 ESA</b><span class="h-meta">{{ host }}:443</span></div>
+            <div class="hop"><span class="h-kind">CDN 边缘</span><b>{{ row.cdn_provider || host || 'CDN' }}</b><span v-if="row.cdn_provider && host" class="h-meta">{{ host }}</span></div>
+          </template>
+          <template v-if="row.entry === 'cdn' || row.entry === 'proxy'">
             <div class="link"></div>
-            <div class="hop"><span class="h-kind">源站 Nginx</span><b>{{ serverIp || '源站' }}</b><span class="h-meta">TLS 终止 · 回源校验{{ gate ? '已启用' : '未启用' }}</span></div>
+            <div class="hop"><span class="h-kind">源站 Nginx</span><b>{{ serverIp || '源站' }}</b><span class="h-meta">TLS 终止<span v-if="row.entry === 'cdn'"> · 回源校验{{ gate ? '已启用' : '未启用' }}</span></span></div>
           </template>
           <div class="link"></div>
           <div class="hop accent"><span class="h-kind">入站</span><b>{{ row.label }}</b><span class="h-meta">{{ row.type }} · {{ row.transport }}{{ row.reality ? ' · Reality' : '' }} · :{{ row.port }}</span></div>
