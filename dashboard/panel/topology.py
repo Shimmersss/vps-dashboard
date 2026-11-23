@@ -116,18 +116,25 @@ class Topology:
     def _parse(self, config):
         entries = self.settings.section('entries')
         labels = self.settings.section('labels')
+        provider = self.settings.get('network.cdn_provider')
+        provider = provider.strip() if isinstance(provider, str) else ''
+        has_cdn = bool(provider or self.settings.gate_enabled)
         inbounds = []
         for item in config.get('inbounds', []):
             tag = item.get('tag') or item.get('type', '')
             transport = (item.get('transport') or {}).get('type', '')
             public = not _loopback(item.get('listen'))
-            kind = entries.get(tag) or ('cdn' if not public and transport in LAYERED_TRANSPORTS else 'direct')
+            inferred = 'direct'
+            if not public and transport in LAYERED_TRANSPORTS:
+                inferred = 'cdn' if has_cdn else 'proxy'
+            kind = entries.get(tag) or inferred
             inbounds.append({
                 'tag': tag, 'type': item.get('type', ''), 'port': item.get('listen_port'), 'public': public,
                 'network': 'udp' if item.get('type') in UDP_TYPES else 'tcp',
                 'transport': transport or 'tcp', 'tls': bool((item.get('tls') or {}).get('enabled')),
                 'reality': bool(((item.get('tls') or {}).get('reality') or {}).get('enabled')),
                 'users': len(item.get('users', [])), 'entry': kind,
+                'cdn_provider': provider if kind == 'cdn' else '',
                 'label': labels.get('inbounds', {}).get(tag) or tag,
             })
         outbounds = []

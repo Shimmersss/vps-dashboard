@@ -21,8 +21,10 @@ test('unused sing-box or its gate never triggers a warning in a healthy Xray vie
   assert.equal(result.notice, undefined)
 })
 
-test('a direct sing-box node does not get a CDN gate warning', () => {
+test('only a CDN sing-box entry gets a CDN gate warning', () => {
   const legacy = { health: { connected: true }, gate: { enabled: false }, topology: { inbounds: [{ entry: 'direct' }] } }
+  assert.equal(engineStatus('singbox', legacy, null, false, 'stream').notice, '')
+  legacy.topology.inbounds[0].entry = 'proxy'
   assert.equal(engineStatus('singbox', legacy, null, false, 'stream').notice, '')
   legacy.topology.inbounds[0].entry = 'cdn'
   assert.match(engineStatus('singbox', legacy, null, false, 'stream').notice, /CDN/)

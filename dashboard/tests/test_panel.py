@@ -258,7 +258,8 @@ class ApiTest(Base):
         self.assertNotIn('fixture-user', body)
         self.assertEqual(data['flows'][0]['rule_label'], '域名后缀 → decodo-us-10003')
         tags = {x['tag']: x for x in data['topology']['inbounds']}
-        self.assertEqual(tags['vless-esa-ws-in']['entry'], 'cdn')
+        self.assertEqual(tags['vless-esa-ws-in']['entry'], 'proxy')
+        self.assertEqual(tags['vless-esa-ws-in']['cdn_provider'], '')
         self.assertEqual(tags['vless-reality-in']['entry'], 'direct')
         system = self.client.get('/monitor/api/system').get_data(as_text=True)
         self.assertNotIn('fixture-pass', system)
@@ -420,6 +421,37 @@ class TopologyTest(Base):
         self.assertNotIn('fixture-pass', described)
         self.assertEqual(t.describe()['final'], 'direct')
         self.assertEqual(t.public_endpoints(), [('tcp', 443)])
+
+    def test_cdn_uses_explicit_deployment_settings(self):
+        topology = self.ctx.topology
+        inbound = 'vless-esa-ws-in'
+        self.ctx.settings.values['gate']['enabled'] = True
+        topology.mtime = None
+        topology.refresh()
+        self.assertEqual(topology.inbound(inbound)['entry'], 'cdn')
+        self.assertEqual(topology.inbound(inbound)['cdn_provider'], '')
+
+        self.ctx.settings.values['gate']['enabled'] = False
+        self.ctx.settings.values['network']['cdn_provider'] = 'Cloudflare'
+        topology.mtime = None
+        topology.refresh()
+        self.assertEqual(topology.inbound(inbound)['entry'], 'cdn')
+        self.assertEqual(topology.inbound(inbound)['cdn_provider'], 'Cloudflare')
+        self.assertEqual(topology.inbound('vless-reality-in')['cdn_provider'], '')
+
+        csrf, _ = login(self.client)
+        response = self.client.put('/monitor/api/prefs', json={'entries': {inbound: 'proxy'}},
+                                   headers=self.headers(csrf))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(topology.inbound(inbound)['entry'], 'proxy')
+        self.assertEqual(topology.inbound(inbound)['cdn_provider'], '')
+
+        self.ctx.settings.values['network']['cdn_provider'] = ''
+        response = self.client.put('/monitor/api/prefs', json={'entries': {inbound: 'cdn'}},
+                                   headers=self.headers(csrf))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(topology.inbound(inbound)['entry'], 'cdn')
+        self.assertEqual(topology.inbound(inbound)['cdn_provider'], '')
 
     def test_udp_inbound_endpoint(self):
         t = self.ctx.topology

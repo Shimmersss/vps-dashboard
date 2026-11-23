@@ -561,8 +561,8 @@ def _validate_pref(key, value):
         if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) and len(v) <= 40 for k, v in value.items()):
             return '名称需为不超过 40 字的文本'
     elif key == 'entries':
-        if not isinstance(value, dict) or not all(v in ('cdn', 'direct') for v in value.values()):
-            return '入口类型只能是 cdn 或 direct'
+        if not isinstance(value, dict) or not all(v in ('cdn', 'proxy', 'direct') for v in value.values()):
+            return '入口类型只能是 cdn、proxy 或 direct'
     elif key in ('probes.enabled', 'network.quality_enabled', 'reachability.enabled'):
         if not isinstance(value, bool):
             return '需为开关值'

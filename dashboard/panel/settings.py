@@ -94,6 +94,7 @@ DEFAULTS = {
         'interfaces': [],
         # CDN origin ports (TLS behind the CDN); filled from the site profile at deploy time.
         'edge_ports': [],
+        'cdn_provider': '',  # Optional display name for a configured CDN.
         'quality_enabled': True,
         'quality_interval_seconds': 60,
         'quality_retention_days': 30,
@@ -109,7 +110,7 @@ DEFAULTS = {
     },
     # Display names; keys are sing-box tags. Unlisted tags are shown as-is.
     'labels': {'inbounds': {}, 'outbounds': {}, 'xray': {}},
-    # Per-inbound entry kind override: "cdn" or "direct". Auto-detected otherwise.
+    # Per-inbound entry kind override: "cdn", "proxy" or "direct". Auto-detected otherwise.
     'entries': {},
 }
 
