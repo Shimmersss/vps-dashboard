@@ -33,6 +33,8 @@
 
 每 5 分钟（可调）经每个 direct / socks / http 出站请求 `probes.targets` 中的目标，记录出口地址、机房与耗时。trace 类目标（`/cdn-cgi/trace`）回显出口 IP；`"kind": "http"` 的目标只检查 HTTPS 可达性，2xx/3xx 算成功。默认目标：Cloudflare trace，以及 Instagram、YouTube、Facebook；可以在 site.json 里换成自己关心的站点。可达不代表视频播放、登录或地区解锁。上游凭据只在内存中从 sing-box 配置读取，不写库，也不出现在任何接口里。
 
+在 sing-box 模式下，`probes.targets_by_outbound` 可按出站标签覆盖默认目标。建议在出口专属列表中保留一项 trace，便于核对实际出口 IP。HTTP 目标可指定 `expected_status`，并用 `expected_body` 匹配响应正文。例如，对需要登录密钥的服务，可以通过已知的 401 JSON 响应验证 HTTPS 可达性，全程无需模型 API 密钥。探测支持 TLS 加密的上游代理，同时验证代理和目标站点的证书。
+
 `alerts.probe_failures` 默认 2（0 表示关闭探测告警），按“出口 × 网站”的已完成轮次触发。例如 trace 和 YouTube 正常，Instagram 连续两轮失败，仍会单独告警。重复评估、标为已读和重启不增加次数；数据缺失、过期或任务中断单独显示监控异常，保留未恢复的网站故障，只有该目标新的成功结果才关闭。被 `probes.skip` 跳过的出口不再触发这些告警；原“整个出口全部目标失败”和出口地址变化告警保留。任务异常仅保存异常类型，不保存可能包含凭据的原始异常消息。
 
 sing-box 和 Xray 的告警列表、未读数与批量已读按监控来源隔离；站点证书、磁盘和大陆入口检测为共享告警，任一来源标为已读会同步共享记录。不传 `engine` 的旧告警 API 保留管理全部来源的兼容行为。
@@ -40,6 +42,8 @@ sing-box 和 Xray 的告警列表、未读数与批量已读按监控来源隔�
 两种模式都能在告警页查看[公开大陆入口 HTTPS 检测](xray.md#可选公开的国内入口检测)。默认关闭，按配置的站点域名及无令牌公开路径检测，并非完整订阅下载或 sing-box/Xray 协议握手。它共用站点入口结果，不使用公开探测点传递节点凭据。
 
 ## 配置分层
+
+`singbox.config_path` 支持单文件以及通过 `sing-box run -C` 加载的配置目录。目录模式由 `singbox.binary` 指定的二进制合并 JSON 片段，供拓扑与探测使用。面板服务需要读取这些片段并执行合并命令。
 
 面板代码不包含域名、服务器地址、端口或 sing-box 标签：
 
@@ -55,6 +59,27 @@ sing-box 和 Xray 的告警列表、未读数与批量已读按监控来源隔�
 
 - **直连入站**按 TCP/UDP 来源地址识别。规则只写在独立链（默认 `JOYSOL_NODE_BANS`），只从公网入站端口跳转进来，不影响 SSH 和面板。TCP 回 reset，UDP 直接丢弃。
 - **CDN 入口**（回环 WebSocket 入站）：Nginx `auth_request` 网关先校验 CDN 回源时添加的密钥头，再检查封禁，然后把 CDN 追加的 X-Forwarded-For **最后一个** IP 交给 sing-box。不带校验头的直连握手返回 403，伪造的 XFF 无效。面板登录 IP 的识别方式相同。
+
+### Nginx Stream 转发的 AnyTLS 来源地址
+
+面板从 sing-box 连接事件读取来源地址。对以 SNI 共用 TCP 443 的 IPv4 部署，可以让 Nginx 以客户端地址建立到 AnyTLS 回环入站的透明连接。入口的公网监听自行生成 PROXY 头，内层监听仅绑定回环地址并解析该头。以下示例复用公网 SNI 分流中的本机中转端口，并由 Nginx 将可信 PROXY 地址作为 AnyTLS 后端连接的源地址。
+
+```nginx
+server {
+    listen 127.0.0.1:15443 proxy_protocol;
+    proxy_bind $proxy_protocol_addr transparent;
+    proxy_pass 127.0.0.1:10443;
+}
+```
+
+Linux 上需要允许 Nginx 工作进程使用 `CAP_NET_RAW`，并将 AnyTLS 回环监听端口的 TCP 回复送回本机透明套接字。选择空闲的策略路由优先级和路由表。以下示例只匹配本机发送、自回环地址和 AnyTLS 端口发出的 TCP 回复。
+
+```sh
+ip -4 route add local default dev lo table 14043
+ip -4 rule add pref 10443 iif lo from 127.0.0.1/32 ipproto tcp sport 10443 lookup 14043
+```
+
+将规则由 systemd oneshot 持久化，并在 Nginx 之前加载。更新前执行 `nginx -t`。切换后从外部客户端新建连接，在面板核对来源地址，并验证同一端口上的 HTTPS 路径。回滚时先移除透明绑定并重载 Nginx，再移除这条规则和路由。已有统计记录仍保留原来源字段。
 - 部署脚本会给 sing-box 配置里所有回环 WebSocket 入站自动挂上网关。
 
 ## 开发与部署

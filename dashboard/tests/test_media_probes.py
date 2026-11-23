@@ -20,6 +20,23 @@ class MediaProbeTests(unittest.TestCase):
         targets = settings.DEFAULTS['probes']['targets']
         self.assertEqual([t['name'] for t in targets], ['trace', 'Instagram', 'YouTube', 'Facebook'])
 
+    def test_auth_response_must_match_status_and_body(self):
+        target = {'name': 'api', 'url': 'https://example.com/models', 'kind': 'http',
+                  'expected_status': 401, 'expected_body': '"error"'}
+        for status, body, ok in [(401, '{"error":"unauthorized"}', 1), (401, 'blocked', 0),
+                                 (403, '{"error":"denied"}', 0)]:
+            with self.subTest(status=status, body=body):
+                with patch.object(probes, 'fetch', return_value=(status, body, 2, 3)):
+                    self.assertEqual(probes.probe(target)['ok'], ok)
+
+    def test_singbox_outbound_override_and_default(self):
+        default = [{'name': 'trace'}]
+        ai_targets = [{'name': 'trace'}, {'name': 'AI API'}]
+        cfg = {'probes.targets': default, 'probes.targets_by_outbound': {'ai': ai_targets, 'skip': []}}
+        self.assertEqual(probes.targets_for(cfg, 'ai'), ai_targets)
+        self.assertEqual(probes.targets_for(cfg, 'direct'), default)
+        self.assertEqual(probes.targets_for(cfg, 'skip'), [])
+
 
 if __name__ == '__main__':
     unittest.main()

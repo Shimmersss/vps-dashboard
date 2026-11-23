@@ -10,6 +10,7 @@ import time
 import urllib.request
 
 from . import system
+from .probes import targets_for
 
 log = logging.getLogger(__name__)
 
@@ -116,12 +117,12 @@ class Alerts:
         interval = int(s.get('probes.interval_seconds'))
         health = ctx.prober.probe_health(limit, interval)
         labels = {o['tag']: o['label'] for o in ctx.prober.outbounds()}
-        if not labels or not s.get('probes.targets'):
+        if not labels:
             return
         self._media(found, 'singbox', labels, health)
         current = {r['key']: r for r in self.open_alerts()}
-        targets = {t['name'] for t in (s.get('probes.targets') or [])}
         for tag, label in labels.items():
+            targets = {t['name'] for t in targets_for(s, tag)}
             states = health.get(tag, {})
             key = 'probe:' + tag  # keep the legacy whole-exit alert identity
             fresh = targets and all(t in states and time.time() - states[t]['at'] <= max(120, interval * 3) for t in targets)
@@ -140,11 +141,12 @@ class Alerts:
         ctx, s = self.ctx, self.ctx.settings
         limit = int(s.get('alerts.probe_failures'))
         interval = int(s.get('probes.interval_seconds'))
-        targets = {t['name'] for t in (s.get('probes.targets') or [])}
         current = {r['key']: r for r in self.open_alerts()}
         now = time.time()
         for outbound, label in labels.items():
-            for name in targets:
+            targets = targets_for(s, outbound) if engine == 'singbox' else (s.get('probes.targets') or [])
+            for target in targets:
+                name = target['name']
                 result = health.get(outbound, {}).get(name)
                 key = engine + ':media:' + hashlib.sha256((outbound + '\x1f' + name).encode()).hexdigest()[:24]
                 stale = not result or now - result['at'] > max(120, interval * 3)
