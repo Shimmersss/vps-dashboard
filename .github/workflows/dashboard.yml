@@ -30,7 +30,7 @@ jobs:
           echo "XRAY_TEST_BINARY=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
       - name: Test both modes and native Xray wire/counter integration
         working-directory: dashboard/tests
-        run: python -B -W ignore::ResourceWarning -m unittest test_panel test_media_probes test_xray test_xray_dashboard test_alert_sources test_engine_modes
+        run: python -B -W ignore::ResourceWarning -m unittest discover
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -42,7 +42,7 @@ jobs:
           cache-dependency-path: dashboard/web/package-lock.json
       - run: npm ci --no-audit --no-fund
         working-directory: dashboard/web
-      - run: node --test tests/engines.test.mjs tests/node-activity.test.mjs
+      - run: node --test tests/*.test.mjs
         working-directory: dashboard/web
       - run: npm run build
         working-directory: dashboard/web

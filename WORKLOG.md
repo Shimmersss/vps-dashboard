@@ -18,3 +18,7 @@
 - Treat loopback WebSocket inbounds as Nginx proxy entries unless deployment settings or an inbound override identify a CDN.
 - Show the configured CDN provider when present and remove the fixed ESA label and port.
 - Cover the default, gateway, provider and override cases, including the CDN gate notice, and rebuild the production assets.
+
+## 可选管理模式与客户端规则
+
+同步面板的浏览器管理、固定订阅与客户端规则，在当前主分支上集成。沿用已有监控部署入口，新增可选管理服务。

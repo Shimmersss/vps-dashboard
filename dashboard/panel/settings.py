@@ -266,7 +266,7 @@ def validate(values, secrets):
     enabled = get_path(values, 'singbox.enabled', True)
     if not isinstance(enabled, bool):
         raise ValueError('singbox.enabled must be a boolean')
-    if not enabled and not get_path(values, 'xray.instances'):
+    if not enabled and not get_path(values, 'xray.instances') and not get_path(values, 'management.enabled', False):
         raise ValueError('At least one monitoring engine must be configured')
     if not isinstance(get_path(values, 'xray.access_control', False), bool):
         raise ValueError('xray.access_control must be a boolean')

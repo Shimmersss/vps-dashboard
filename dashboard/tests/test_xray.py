@@ -304,9 +304,10 @@ class WireTest(unittest.TestCase):
             server.stop(0).wait()
 
 
+@unittest.skipUnless(os.environ.get('XRAY_TEST_BINARY'), 'set XRAY_TEST_BINARY for the real Xray test')
 class NativeCoreTest(unittest.TestCase):
     def test_local_native_core_multi_config_and_real_traffic(self):
-        binary = Path(os.environ.get('XRAY_TEST_BINARY', str(Path.home() / 'Applications/ServerProxyManager.app/Contents/Resources/xray')))
+        binary = Path(os.environ['XRAY_TEST_BINARY'])
         self.assertTrue(binary.is_file(), 'Native Xray runtime is required')
         def free_port():
             with socket.socket() as s:

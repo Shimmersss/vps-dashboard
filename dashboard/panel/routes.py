@@ -33,8 +33,9 @@ def register(app, ctx):
     def client_ip():
         # Nginx overwrites X-Dashboard-Client-IP with the TCP peer. Behind the CDN that peer is an
         # edge node, so the CDN-appended last X-Forwarded-For entry is trusted only with a valid origin header.
-        peer = request.headers.get('X-Dashboard-Client-IP', request.remote_addr or '')
-        if _origin_verified(s):
+        trusted = request.remote_addr in ('127.0.0.1', '::1') and s.get('site.trust_proxy', True)
+        peer = request.headers.get('X-Dashboard-Client-IP', request.remote_addr or '') if trusted else request.remote_addr or ''
+        if trusted and _origin_verified(s):
             last = request.headers.get('X-Forwarded-For', '').split(',')[-1].strip()
             try:
                 return str(ipaddress.ip_address(last))
@@ -67,6 +68,9 @@ def register(app, ctx):
     @app.before_request
     def protect():
         path = request.path
+        if request.endpoint and request.endpoint.startswith('subscriptions.'):
+            # This GET-only blueprint checks its own independent download token.
+            return None
         if path.startswith('/internal/'):
             if request.remote_addr not in ('127.0.0.1', '::1'):
                 return '', 403
@@ -88,7 +92,7 @@ def register(app, ctx):
             if request.headers.get('Origin') != s.public_origin:
                 return error('来源验证失败', 403)
         if not ctx.bans_enabled and rel == '/api/ban':
-            return error('访问控制未启用；Xray 需在站点配置中设置 xray.access_control=true 后重新部署', 409)
+            return error('访问控制未启用；Xray 需在 settings.json 中设置 xray.access_control=true 后重启面板', 409)
         if not ctx.singbox_enabled and rel in ('/api/connections/close', '/api/probes/run', '/api/stream'):
             return error('sing-box 未启用；Xray 不提供关闭单连接与实时连接流', 409)
         return None
@@ -183,7 +187,8 @@ def register(app, ctx):
             alerts=len([a for a in ctx.alerts.for_engine(ctx.alerts.open_alerts(), 'singbox') if not a['acked']]),
             alerts_xray=len([a for a in xray_dashboard.alerts_for_xray(ctx, ctx.alerts.open_alerts()) if not a['acked']]),
             features={'probes': ctx.singbox_enabled and bool(s.get('probes.enabled')), 'stream': ctx.singbox_enabled,
-                      'bans': ctx.bans_enabled, 'xray_bans': ctx.xray_bans}, xray=ctx.xray.snapshot(detail=False),
+                      'bans': ctx.bans_enabled, 'xray_bans': ctx.xray_bans, 'management': bool(s.get('management.enabled', False)),
+                      'client_rules': bool(s.get('management.enabled', False) and request.joysol_session['user'] == s.secrets['username'])}, xray=ctx.xray.snapshot(detail=False),
             primary_engine='xray' if ctx.xray.instances else 'singbox', singbox_enabled=ctx.singbox_enabled,
         )
 
@@ -291,6 +296,16 @@ def register(app, ctx):
             ip=request.args.get('ip', ''), q=request.args.get('q', '')[:100], since=request.args.get('since', 'all'),
             sort=request.args.get('sort', 'last_seen'), direction=request.args.get('dir', 'desc'),
             limit=as_int('limit', 100, 1, 2000), offset=as_int('offset', 0), online=online)
+        if s.get('management.enabled', False) and request.joysol_session['user'] == s.secrets['username']:
+            from . import client_rules
+            try:
+                policy = client_rules.load(s.get('management.subscription_dir', str(s.data_dir / 'subscriptions')))
+                for row in result['rows']:
+                    row['client_rule_target'] = client_rules.candidate(row['domain'])
+                    matched = client_rules.match_target(policy, row['domain'])
+                    row['client_rule'] = ({k: matched[k] for k in ('id', 'action', 'type', 'target')} if matched else None)
+            except (OSError, ValueError):
+                result['client_rules_error'] = '客户端规则无法读取，请在代理规则页检查'
         return jsonify(result)
 
     @bp.route('/api/daily')
@@ -468,7 +483,7 @@ def register(app, ctx):
         cert = system.certificate(ctx.cert_path())
         return jsonify(
             version=ctx.version, uptime=system.uptime(), started=int(ctx.health['started']),
-            services=system.services(list(dict.fromkeys(list(s.get('alerts.services') or []) + [i['service'] for i in ctx.xray.instances] + ['joysol-dashboard.service']))),
+            services=system.services(list(dict.fromkeys(list(s.get('alerts.services') or []) + [i['service'] for i in ctx.xray.instances]))),
             certificate=cert, disk=system.disk(str(s.data_dir)), database={'bytes': ctx.store.size(), 'migrations': ctx.store.migrations},
             singbox={'version': system.singbox_version(s.get('singbox.binary')), 'config': s.get('singbox.config_path'),
                      'api': s.get('singbox.api_address'), 'error': ctx.topology.error},
@@ -544,6 +559,8 @@ def register(app, ctx):
                        daily=d['days'], daily_ips=d['rows'], bans=ctx.bans.list(), health=_health(ctx),
                        tracking_since=ctx.store.totals()['tracking_since'], csrf=request.joysol_session['csrf'], history_limit=2000)
 
+    from .management import register as register_management
+    register_management(bp, ctx)
     app.register_blueprint(bp)
 
     @app.route(base)

@@ -93,7 +93,7 @@
       <section class="card"><div class="card-head"><h2>Xray 采样状态</h2></div><div class="card-body grid"><div v-for="i in instances" :key="i.id" class="toolbar"><Status :kind="i.connected ? 'good' : 'bad'" :text="i.label" /><span>{{ i.connected ? '采集正常' : i.error }}</span><span class="small muted">最近成功 {{ datetime(i.last_success * 1000) }}</span></div><p class="small muted">当前 Xray 统计接口未提供逐连接 RTT、重传和目标带宽；不沿用 sing-box 的链路质量数据。</p></div></section>
     </template>
 
-    <section v-if="section === 'bans'" class="card"><div class="card-body"><h3>Xray 访问控制未启用</h3><p>启用后，面板用 iptables 拒绝被封禁地址访问 Xray 的公网入站端口（TCP 重置，UDP 丢弃）；监听回环、经 Nginx 转发的入口由回源网关负责。不修改 Xray 配置，也不重启 Xray。</p><p class="small muted">在站点配置里设置 <span class="mono">settings.xray.access_control=true</span>，再运行部署脚本（会给面板服务增加防火墙权限）。Xray 的运行时路由接口会整体替换已有规则，因此不使用它封禁。</p></div></section>
+    <section v-if="section === 'bans'" class="card"><div class="card-body"><h3>Xray 访问控制未启用</h3><p>启用后，面板用 iptables 拒绝被封禁地址访问 Xray 的公网入站端口（TCP 重置，UDP 丢弃）；监听回环、经 Nginx 转发的入口由回源网关负责。不修改 Xray 配置，也不重启 Xray。</p><p class="small muted">在 /etc/sb-dashboard/settings.json 中设置 <span class="mono">xray.access_control=true</span>，然后重启 sb-dashboard。本项目安装器已为面板配置防火墙权限。Xray 的运行时路由接口会整体替换已有规则，因此不使用它封禁。</p></div></section>
 
     <template v-if="data && section === 'system' && system">
       <div class="grid cols-2"><section class="card"><div class="card-head"><h2>Xray 核心与服务</h2></div><div class="card-body grid"><div v-for="i in system.xray_runtimes" :key="i.id"><h3>{{ i.label }}</h3><p>{{ i.version || '版本暂未读取' }}</p><dl class="kv small"><dt>服务状态</dt><dd>{{ system.services[i.service] || '未知' }}</dd><dt>统计接口</dt><dd>{{ i.api }}（仅回环）</dd><dt>节点配置</dt><dd class="mono wrap">{{ i.config }}</dd>

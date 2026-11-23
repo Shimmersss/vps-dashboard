@@ -4,7 +4,7 @@ import { defaultEngine } from './engines.js'
 
 export const state = reactive({
   overview: null,
-  engine: 'xray',
+  engine: 'singbox',
   engineInitialized: false,
   xray: null,
   xrayError: false,
